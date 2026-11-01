@@ -1,0 +1,22 @@
+language: pl
+profiles:
+  8gb:  { llm_model: "qwen2.5:7b-instruct",  num_ctx: 16384 }
+  16gb: { llm_model: "qwen2.5:14b-instruct", num_ctx: 24576 }
+asr: { model: large-v3-turbo, compute_type: int8_float16, vad_filter: true, beam_size: 5 }
+frames:
+  sample_every_s: 2
+  analysis_width: 1120
+  board_white_level: 235      # piksele jasniejsze = tablica
+  min_board_area: 0.05        # minimalny udzial tablicy w kadrze
+  layout_iou: 0.85            # ponizej = zmiana ukladu tablicy (nowa plansza)
+  ink_level: 140              # piksele ciemniejsze = tusz
+  erase_fraction: 0.30        # tyle poprzedniego tuszu znika = wymazanie
+  min_ink_px: 300             # minimalna ilosc tuszu, by klatka miala tresc
+  save_new_ink_px: 60         # ile nowego tuszu wzgledem ostatnio zapisanej, by zapisac
+  max_ink_blob_frac: 0.004    # wieksze ciemne bryly nie sa tuszem
+  subset_ratio: 0.9           # stan zawarty w nastepnym w >=90% = wczesniejsza wersja
+  max_hold_s: 120
+  max_frames: 300
+  jpeg_quality: 90
+vlm: { model: "qwen2.5vl:7b", num_predict: 800, keep_alive: "10m" }
+llm: { chunk_minutes: 10, num_predict: 3000, temperature: 0.2 }

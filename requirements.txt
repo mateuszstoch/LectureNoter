@@ -1,0 +1,8 @@
+numpy
+opencv-python-headless
+pyyaml
+loguru
+pytest
+requests
+faster-whisper
+nvidia-ml-py
