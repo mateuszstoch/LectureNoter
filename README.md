@@ -49,6 +49,17 @@ Przydatne opcje:
 
 Brak ścieżki audio w pliku: ASR jest pomijany, a notatki powstają tylko z tablicy.
 
+## Windows 11 (WSL2)
+
+Działa przez WSL2 z GPU (niesprawdzone przez autora, testowane tylko na macOS):
+
+- Sterownik NVIDIA instaluj **tylko w Windowsie**. W WSL `nvidia-smi` ma pokazać kartę.
+- W WSL doinstaluj cuDNN 9 i cuBLAS 12 dla faster-whisper: CUDA toolkit w wariancie `wsl-ubuntu` albo `pip install nvidia-cublas-cu12 nvidia-cudnn-cu12`.
+- Najprościej zainstalować **Ollamę w WSL** (jak w instalacji powyżej). Bez systemd uruchom ją ręcznie: `ollama serve`. Nie uruchamiaj jednocześnie Ollamy z Windowsa, bo oba serwery mogą trzymać modele w VRAM.
+- W `%UserProfile%\.wslconfig` zwiększ pamięć, np. `[wsl2]` i `memory=24GB` (domyślnie WSL dostaje ok. 50% RAM).
+- Projekt i filmy trzymaj w systemie plików WSL (np. `~/`), nie w `/mnt/c/...`, bo tam I/O jest dużo wolniejsze.
+- Windows zajmuje ok. 0,5–1 GB VRAM. Na karcie 8 GB zamknij przeglądarkę i inne programy używające GPU na czas uruchomienia.
+
 ## Konfiguracja
 
 Wszystkie progi i modele są w `config.yaml`. Najczęściej trzeba dostroić sekcję `frames`, jeśli wybiera za dużo lub za mało klatek (np. `ink_level`, `erase_fraction`, `save_new_ink_px`, `max_hold_s`).
