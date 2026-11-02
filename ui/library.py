@@ -6,7 +6,7 @@ import unicodedata
 from pathlib import Path, PurePosixPath
 
 from config_loader import resolve
-from io_utils import read_json
+from io_utils import atomic_write_json, read_json
 from main import STAGES, PipelineOrchestrator
 
 VIDEO_EXT = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v"}
@@ -105,13 +105,52 @@ class Library:
     def orchestrator(self, video_id):
         return PipelineOrchestrator.from_workdir(self.workdir(video_id), self.cfg)
 
+    # --- nazwa i folder ---
+    def iter_meta(self):
+        """(id, meta) wszystkich wykladow: lekko, bez liczenia statusow etapow."""
+        for d in sorted(self.work_dir.iterdir()):
+            if d.is_dir() and ID_RE.match(d.name):
+                meta = read_json(d / "meta.json")
+                if meta:
+                    yield d.name, meta
+
+    def rename(self, video_id, title):
+        title = re.sub(r"\s+", " ", (title or "")).strip()
+        if not title:
+            raise LibraryError("Nazwa wykładu nie może być pusta.")
+        if len(title) > 120:
+            raise LibraryError("Nazwa wykładu jest za długa (maks. 120 znaków).")
+        wd = self.workdir(video_id)
+        meta = read_json(wd / "meta.json", {})
+        meta["title"] = title
+        atomic_write_json(str(wd / "meta.json"), meta)  # tylko wyswietlany tytul: id i katalog zostaja bez zmian
+        return title
+
+    def set_folder(self, video_id, folder_id):
+        wd = self.workdir(video_id)
+        meta = read_json(wd / "meta.json", {})
+        if folder_id:
+            meta["folder"] = folder_id
+        else:
+            meta.pop("folder", None)
+        atomic_write_json(str(wd / "meta.json"), meta)
+
+    def reassign_folder(self, old_folder, new_folder):
+        """Przenosi wszystkie wyklady z folderu `old_folder` do `new_folder` (None = korzen)."""
+        n = 0
+        for vid, meta in self.iter_meta():
+            if meta.get("folder") == old_folder:
+                self.set_folder(vid, new_folder)
+                n += 1
+        return n
+
     def summary(self, video_id):
         wd = self.workdir(video_id)
         meta = read_json(wd / "meta.json", {})
         st = self.orchestrator(video_id).status()
         return {"id": video_id, "title": meta.get("title"), "created": meta.get("created"),
                 "duration": meta.get("duration"), "has_audio": meta.get("has_audio"),
-                "video_path": meta.get("video_path"), "profile": meta.get("profile"),
+                "video_path": meta.get("video_path"), "profile": meta.get("profile"), "folder": meta.get("folder"),
                 "overall": st["overall"], "video_exists": st["video_exists"],
                 "stages": st["stages"], "error": st["run"].get("error")}
 

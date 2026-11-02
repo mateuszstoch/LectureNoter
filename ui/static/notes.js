@@ -57,31 +57,32 @@ function renderNotesInto(el, md, videoId) {
   return toc;
 }
 
-function highlight(root, query) {
+function highlightRx(root, rx) {
   root.querySelectorAll("mark.hit").forEach((m) => m.replaceWith(document.createTextNode(m.textContent)));
   root.normalize();
-  if (!query) return [];
-  const q = query.toLowerCase();
+  if (!rx) return [];
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode: (n) => (n.parentElement.closest(".katex, mark") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
   });
   const nodes = [];
   while (walker.nextNode()) nodes.push(walker.currentNode);
   for (const n of nodes) {
-    const low = n.nodeValue.toLowerCase();
-    let i = low.indexOf(q);
-    if (i < 0) continue;
-    const frag = document.createDocumentFragment();
-    let last = 0;
-    while (i >= 0) {
-      frag.append(n.nodeValue.slice(last, i), h("mark", { class: "hit" }, n.nodeValue.slice(i, i + q.length)));
-      last = i + q.length;
-      i = low.indexOf(q, last);
+    rx.lastIndex = 0;
+    let m, last = 0, frag = null;
+    while ((m = rx.exec(n.nodeValue))) {
+      if (m[0] === "") { rx.lastIndex++; continue; }
+      frag = frag || document.createDocumentFragment();
+      frag.append(n.nodeValue.slice(last, m.index), h("mark", { class: "hit" }, m[0]));
+      last = m.index + m[0].length;
     }
-    frag.append(n.nodeValue.slice(last));
-    n.replaceWith(frag);
+    if (frag) { frag.append(n.nodeValue.slice(last)); n.replaceWith(frag); }
   }
   return [...root.querySelectorAll("mark.hit")];
+}
+
+// podświetlenie dosłownego tekstu (pole szukania w notatkach)
+function highlight(root, query) {
+  return highlightRx(root, query ? new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi") : null);
 }
 
 // ---------- okno: moment wykładu (klatka + mowa) ----------
@@ -153,6 +154,17 @@ function mountNotesTab(container, videoId) {
       `W ${q.degraded_chunks.length} z ${q.chunks} fragmentów model zapętlił się i powtórzenia zostały usunięte automatycznie, ale treść tych fragmentów (nr ${q.degraded_chunks.join(", ")}) może być niepełna. `,
       "Możesz wygenerować notatki ponownie (Przetwarzanie → Notatki (LLM) → Regeneruj).") : null;
     root.replaceChildren(...kids(toolbar(), qBanner, h("div", { class: "notes-layout" }, tocEl, body)));
+    const pf = window.pendingNotesFocus;
+    if (pf && pf.videoId === videoId) {  // przejście z wyszukiwarki biblioteki: podświetl rdzenie słów i przewiń do sekcji
+      window.pendingNotesFocus = null;
+      hits = highlightRx(body, termRegex(pf.terms));
+      hitIdx = -1;
+      const sec = [...body.querySelectorAll("h1, h2, h3")].find((x) => x.textContent.trim() === (pf.heading || "").trim());
+      const target = sec || hits[0];
+      if (target) setTimeout(() => target.scrollIntoView({ block: "start", behavior: "smooth" }), 80);
+      const hitsEl = $("#nhits");
+      if (hitsEl) hitsEl.textContent = hits.length ? `${hits.length} trafień z wyszukiwarki` : "";
+    }
   }
 
   function doSearch(q) {

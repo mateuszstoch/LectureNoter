@@ -29,9 +29,11 @@ from main import STAGES
 from ollama_client import OllamaClient, pick_profile, total_vram_gb, vram_used_gb
 from ui import materials, notes as notes_mod
 from ui.chat import ChatError, ChatService, ChatStore, export_markdown
+from ui.folders import FolderError, FolderStore
 from ui.jobs import JobError, JobManager
 from ui.library import Library, LibraryError
 from ui.lifecycle import AutoExit, ClientTracker, KeepAwake
+from ui.search import SearchIndex
 from run_state import is_live, read_run_state
 
 ROOT = Path(__file__).resolve().parent
@@ -57,6 +59,21 @@ class RunRequest(BaseModel):
     from_stage: str | None = None
     only_stage: str | None = None
     force: bool = False
+
+
+class VideoPatch(BaseModel):
+    title: str | None = None
+    folder: str | None = None  # None (przy podanym polu) = przenies do korzenia
+
+
+class FolderCreate(BaseModel):
+    name: str
+    parent: str | None = None
+
+
+class FolderPatch(BaseModel):
+    name: str | None = None
+    parent: str | None = None
 
 
 class NotesBody(BaseModel):
@@ -98,6 +115,8 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
     lib = Library(videos_dir, work_dir, cfg)
     gpu = GpuLock(work_dir / ".gpu.lock")
     jm = jobs or JobManager(lib, gpu)
+    folders = FolderStore(work_dir)
+    search_index = SearchIndex(lib, folders)
     tracker = ClientTracker()
 
     def is_busy():
@@ -135,7 +154,7 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
     def guard(fn):
         try:
             return fn()
-        except (LibraryError, JobError) as e:
+        except (LibraryError, JobError, FolderError) as e:
             raise HTTPException(400, str(e))
 
     @app.get("/api/health")
@@ -242,6 +261,54 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
     def move(job_id: str, req: MoveRequest):
         guard(lambda: jm.move(job_id, req.position))
         return jm.snapshot()
+
+    # --- nazwy, foldery, wyszukiwanie ---
+    def folders_with_counts():
+        counts = {}
+        for _, meta in lib.iter_meta():
+            counts[meta.get("folder")] = counts.get(meta.get("folder"), 0) + 1
+        return [dict(f, count=counts.get(f["id"], 0)) for f in folders.list()]
+
+    @app.get("/api/folders")
+    def list_folders():
+        return folders_with_counts()
+
+    @app.post("/api/folders")
+    def create_folder(req: FolderCreate):
+        fid = guard(lambda: folders.create(req.name, req.parent))
+        return {"id": fid}
+
+    @app.patch("/api/folders/{fid}")
+    def patch_folder(fid: str, req: FolderPatch):
+        kw = {}
+        if "name" in req.model_fields_set and req.name is not None:
+            kw["name"] = req.name
+        if "parent" in req.model_fields_set:
+            kw["parent"] = req.parent
+        guard(lambda: folders.update(fid, **kw))
+        return {"ok": True}
+
+    @app.delete("/api/folders/{fid}")
+    def delete_folder(fid: str):
+        parent = guard(lambda: folders.delete(fid))
+        moved = lib.reassign_folder(fid, parent)  # wyklady nie sa usuwane: trafiaja do folderu nadrzednego
+        logger.info(f"usunieto folder {fid}; wyklady przeniesione: {moved}")
+        return {"ok": True, "moved_lectures": moved, "moved_to": parent}
+
+    @app.patch("/api/videos/{vid}")
+    def patch_video(vid: str, req: VideoPatch):
+        guard(lambda: lib.workdir(vid))
+        if "title" in req.model_fields_set and req.title is not None:
+            guard(lambda: lib.rename(vid, req.title))
+        if "folder" in req.model_fields_set:
+            if req.folder and not folders.exists(req.folder):
+                raise HTTPException(400, "Nie ma takiego folderu.")
+            guard(lambda: lib.set_folder(vid, req.folder))
+        return guard(lambda: lib.summary(vid))
+
+    @app.get("/api/search")
+    def search(q: str = "", folder: str | None = None):
+        return search_index.search(q, folder)
 
     # --- notatki ---
     def wd_of(vid):
@@ -399,7 +466,7 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     def build_state():
-        return {"queue": jm.snapshot(), "videos": lib.list_videos(), "gpu_holder": gpu.holder()}
+        return {"queue": jm.snapshot(), "videos": lib.list_videos(), "gpu_holder": gpu.holder(), "folders": folders_with_counts()}
     app.state.build_state = build_state
 
     @app.get("/api/stream")

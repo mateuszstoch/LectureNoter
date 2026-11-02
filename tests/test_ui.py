@@ -945,3 +945,200 @@ def test_chat_export_errors_and_empty_chat(chat_client):
     # usuwanie przez API i brak tej rozmowy w eksporcie
     assert c.delete(f"/api/videos/ok/chats/{cid}").json() == {"ok": True}
     assert c.get(f"/api/videos/ok/chats/{cid}/export").status_code == 404
+
+
+# ---------- foldery, nazwy, wyszukiwanie ----------
+from ui.folders import MAX_DEPTH, FolderError, FolderStore  # noqa: E402
+
+
+def test_folder_store_tree_rules(tmp_path):
+    fs = FolderStore(tmp_path)
+    a = fs.create("Semestr 3")
+    b = fs.create("Matematyka", a)
+    c = fs.create("Analiza", b)
+    paths = {f["id"]: f["path"] for f in fs.list()}
+    assert paths[c] == ["Semestr 3", "Matematyka", "Analiza"] and [f["depth"] for f in fs.list()] == [0, 1, 2]
+    with pytest.raises(FolderError, match="już folder"):
+        fs.create("matematyka", a)                       # duplikat wsrod rodzenstwa (bez wzgledu na wielkosc liter)
+    fs.create("Matematyka")                               # ta sama nazwa w innym miejscu jest ok
+    for bad in ("", "   ", "x" * 61, "a\x00b"):
+        with pytest.raises(FolderError):
+            fs.create(bad)
+    with pytest.raises(FolderError, match="nadrzędnego"):
+        fs.create("X", "nie-ma")
+    # cykle i glebokosc
+    with pytest.raises(FolderError, match="do niego samego"):
+        fs.update(a, parent=c)
+    with pytest.raises(FolderError, match="do niego samego"):
+        fs.update(b, parent=b)
+    cur = c
+    for i in range(MAX_DEPTH):
+        try:
+            cur = fs.create(f"L{i}", cur)
+        except FolderError as e:
+            assert "głębokie" in str(e)
+            break
+    else:
+        raise AssertionError("limit zaglebienia nie zadzialal")
+    fs.update(c, name="Analiza I")
+    assert fs.exists(c) and [f["name"] for f in fs.list() if f["id"] == c] == ["Analiza I"]
+    fs.update(c, parent=None)                              # przeniesienie do korzenia
+    assert [f for f in fs.list() if f["id"] == c][0]["parent"] is None
+
+
+def test_folder_delete_moves_children_up_and_resolves_name_clash(tmp_path):
+    fs = FolderStore(tmp_path)
+    top = fs.create("Top")
+    mid = fs.create("Mid", top)
+    inner = fs.create("Top", mid)          # taka sama nazwa jak 'top' po przesunieciu do korzenia
+    parent = fs.delete(mid)
+    assert parent == top
+    by_id = {f["id"]: f for f in fs.list()}
+    assert mid not in by_id and by_id[inner]["parent"] == top
+    root_names = [f["name"] for f in fs.list() if f["parent"] is None]
+    assert root_names == ["Top"]
+    # usuniecie folderu glownego: dziecko trafia do korzenia, a duplikat nazwy dostaje numer
+    fs.delete(top)
+    assert [f["name"] for f in fs.list()] == ["Top"]
+
+
+def test_rename_lecture_keeps_id_and_survives_pipeline(client, env):
+    c, jm = client
+    lib, _, _, videos, work = env
+    c.post("/api/videos", json={"files": ["ok.mp4"], "enqueue": False})
+    r = c.patch("/api/videos/ok", json={"title": "  Analiza   matematyczna: wykład 4  "})
+    assert r.status_code == 200 and r.json()["title"] == "Analiza matematyczna: wykład 4" and r.json()["id"] == "ok"
+    assert lib.workdir("ok").name == "ok"                                      # identyfikator i katalog bez zmian
+    o = lib.orchestrator("ok")
+    o.ensure_meta()                                                             # proces zadania przepisuje meta.json
+    assert c.get("/api/videos/ok").json()["title"] == "Analiza matematyczna: wykład 4"
+    assert c.patch("/api/videos/ok", json={"title": "   "}).status_code == 400
+    assert c.patch("/api/videos/ok", json={"title": "x" * 121}).status_code == 400
+    assert c.patch("/api/videos/nie-ma", json={"title": "A"}).status_code == 400
+
+
+def test_folders_api_assign_move_delete(client, env):
+    c, jm = client
+    lib, _, _, videos, work = env
+    for f in ("ok.mp4", "other.mp4"):
+        c.post("/api/videos", json={"files": [f], "enqueue": False})
+    root = c.post("/api/folders", json={"name": "Studia"}).json()["id"]
+    sub = c.post("/api/folders", json={"name": "Semestr 3", "parent": root}).json()["id"]
+    assert c.post("/api/folders", json={"name": "studia"}).status_code == 400
+    assert c.patch("/api/videos/ok", json={"folder": sub}).json()["folder"] == sub
+    assert c.patch("/api/videos/other", json={"folder": "nie-ma"}).status_code == 400
+    listing = {f["id"]: f for f in c.get("/api/folders").json()}
+    assert listing[sub]["count"] == 1 and listing[root]["count"] == 0 and listing[sub]["path"] == ["Studia", "Semestr 3"]
+    assert c.patch(f"/api/folders/{sub}", json={"name": "Sem. 3"}).status_code == 200
+    assert c.patch(f"/api/folders/{root}", json={"parent": sub}).status_code == 400   # cykl
+    # usuniecie folderu nie usuwa wykladow: przechodza do folderu nadrzednego
+    r = c.delete(f"/api/folders/{sub}").json()
+    assert r["moved_lectures"] == 1 and r["moved_to"] == root
+    assert c.get("/api/videos/ok").json()["folder"] == root and (lib.workdir("ok") / "meta.json").exists()
+    # przeniesienie do korzenia (folder: null)
+    assert c.patch("/api/videos/ok", json={"folder": None}).json()["folder"] is None
+    assert c.delete("/api/folders/nie-ma").status_code == 400
+    # SSE niesie foldery
+    state = json.loads(c.get("/api/stream", params={"once": "true"}).text.split("data: ", 1)[1].split("\n\n")[0])
+    assert [f["name"] for f in state["folders"]] == ["Studia"]
+
+
+@pytest.fixture
+def search_env(client, env):
+    c, jm = client
+    lib, gpu, _, videos, work = env
+    data = {
+        "ok": ("Analiza matematyczna wykład 4", "## Granice ciągów\nGranica ciągu jest liczbą, do której zbliżają się wyrazy.\n## Szeregi\nSzereg zbieżny ma sumę.",
+               [{"start": 10, "end": 20, "text": "Dzisiaj omawiamy granice funkcji i ich własności."}], "Wzór granicy: lim x do zera"),
+        "other": ("Teoria grafów", "## Drzewa\nDrzewo to graf spójny i acykliczny.\n## Maszyny\nMaszyna Turinga nie jest grafem.",
+                  [{"start": 5, "end": 9, "text": "Graf jest strukturą z wierzchołkami i krawędziami."}], ""),
+        "sleep": ("Obliczalność", "## Maszyna Turinga\nMaszyna Turinga ma taśmę nieskończoną i głowicę.\n## Teza Churcha\nTeza o algorytmach.",
+                  [{"start": 100, "end": 110, "text": "Maszyny Turinga rozstrzygają języki."}], ""),
+    }
+    for name, (title, notes, tr, board) in data.items():
+        vid = lib.add_video(f"{name}.mp4")
+        wd = lib.workdir(vid)
+        lib.rename(vid, title)
+        (wd / "lecture_notes.md").write_text(notes, encoding="utf-8")
+        (wd / "transcript.json").write_text(json.dumps(tr), encoding="utf-8")
+        if board:
+            (wd / "vision_context.json").write_text(json.dumps([{"file": "f.jpg", "timestamp": 50.0, "text": board}]), encoding="utf-8")
+    return c, lib
+
+
+def search(c, q, **kw):
+    return c.get("/api/search", params={"q": q, **kw}).json()
+
+
+def test_search_finds_across_sources_with_polish_inflection(search_env):
+    c, lib = search_env
+    r = search(c, "maszynie Turinga")          # inna forma fleksyjna niz w tekstach
+    ids = [x["video_id"] for x in r["results"]]
+    assert set(ids[:2]) == {"sleep", "other"} and "ok" not in ids[:2]
+    sleep = next(x for x in r["results"] if x["video_id"] == "sleep")
+    kinds = {h["kind"] for h in sleep["hits"]}
+    assert {"notes", "transcript"} <= kinds
+    notes_hit = next(h for h in sleep["hits"] if h["kind"] == "notes")
+    assert notes_hit["heading"] == "Maszyna Turinga" and "Turinga" in notes_hit["snippet"]
+    tr_hit = next(h for h in sleep["hits"] if h["kind"] == "transcript")
+    assert tr_hit["t"] == 100 and tr_hit["label"] == "Mowa 00:01:40"
+    assert r["total_hits"] >= 3 and r["terms"]
+
+
+def test_search_board_title_phrase_and_folder_filter(search_env):
+    c, lib = search_env
+    r = search(c, "lim")
+    assert [x["video_id"] for x in r["results"]] == ["ok"] and r["results"][0]["hits"][0]["kind"] == "board"
+    r = search(c, "teoria")                        # trafienie w tytule wykladu
+    assert r["results"][0]["video_id"] == "other" and r["results"][0]["title_match"] is True
+    phrase = search(c, '"maszyna turinga ma taśmę"')
+    assert [x["video_id"] for x in phrase["results"]] == ["sleep"]    # fraza dokladna: nie pasuja inne wyklady z 'Turinga'
+    fid = c.post("/api/folders", json={"name": "Teoria"}).json()["id"]
+    c.patch("/api/videos/other", json={"folder": fid})
+    in_folder = search(c, "maszyna", folder=fid)
+    assert [x["video_id"] for x in in_folder["results"]] == ["other"]
+    assert in_folder["results"][0]["folder_path"] == ["Teoria"]
+    assert {x["video_id"] for x in search(c, "maszyna")["results"]} == {"other", "sleep"}
+
+
+def test_search_title_includes_folder_name_and_handles_empty_queries(search_env):
+    c, lib = search_env
+    fid = c.post("/api/folders", json={"name": "Egzaminy"}).json()["id"]
+    c.patch("/api/videos/ok", json={"folder": fid})
+    assert search(c, "egzaminy")["results"][0]["video_id"] == "ok"
+    for q in ("", " ", "a", "i w z"):             # za krotkie lub same slowa pomijane (stopwords)
+        assert search(c, q)["results"] == []
+
+
+def test_search_prefers_edited_notes_and_refreshes_after_changes(search_env):
+    c, lib = search_env
+    assert search(c, "kwaternion")["results"] == []
+    wd = lib.workdir("ok")
+    (wd / "lecture_notes.edited.md").write_text("## Moje uwagi\nKwaterniony opisują obroty.", encoding="utf-8")
+    r = search(c, "kwaternion")
+    assert [x["video_id"] for x in r["results"]] == ["ok"] and r["results"][0]["hits"][0]["heading"] == "Moje uwagi"
+    # wersja edytowana ma pierwszenstwo: tekst z wygenerowanej juz nie jest szukany
+    assert search(c, "szereg zbieżny")["results"] == []
+    (wd / "lecture_notes.edited.md").unlink()
+    assert search(c, "kwaternion")["results"] == [] and search(c, "szereg")["results"]
+    c.patch("/api/videos/ok", json={"title": "Zupełnie nowa nazwa"})
+    assert search(c, "nowa")["results"][0]["video_id"] == "ok"             # zmiana nazwy widoczna w wyszukiwarce od razu
+    c.delete("/api/videos/ok")
+    assert search(c, "nowa")["results"] == []                              # usuniety wyklad znika z wynikow
+
+
+def test_search_snippet_window():
+    from ui.search import make_snippet
+    text = "Wstęp. " * 40 + "Tutaj pojawia się ważna definicja maszyny Turinga w środku tekstu. " + "Koniec. " * 40
+    s = make_snippet(text, ["maszy"])
+    assert s.startswith("… ") and s.endswith(" …") and "maszyny Turinga" in s and len(s) < 300
+    assert make_snippet("## Tytuł\n**pogrubione** słowo", ["pogrub"]).startswith("Tytuł pogrubione")
+
+
+def test_search_snippet_does_not_repeat_section_heading(search_env):
+    c, lib = search_env
+    r = search(c, "maszyna turinga")
+    sleep = next(x for x in r["results"] if x["video_id"] == "sleep")
+    hit = next(h for h in sleep["hits"] if h["kind"] == "notes" and h["heading"] == "Maszyna Turinga")
+    assert hit["snippet"].lower().count("maszyna turinga") == 1          # tresc zaczyna sie od 'Maszyna Turinga ma taśmę…'
+    assert hit["snippet"].startswith("Maszyna Turinga ma taśmę")

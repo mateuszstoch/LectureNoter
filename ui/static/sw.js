@@ -1,6 +1,6 @@
 // Service worker: powłoka aplikacji z cache (działa też, gdy serwer jest wyłączony). API nigdy nie jest cache'owane.
-const CACHE = "lecturenoter-v9";
-const SHELL = ["/", "/app.js", "/notes.js", "/chat.js", "/app.css", "/fonts/fonts.css", "/vendor/marked.min.js", "/vendor/purify.min.js",
+const CACHE = "lecturenoter-v10";
+const SHELL = ["/", "/app.js", "/notes.js", "/library.js", "/chat.js", "/app.css", "/fonts/fonts.css", "/vendor/marked.min.js", "/vendor/purify.min.js",
                "/vendor/katex/katex.min.js", "/vendor/katex/katex.min.css", "/manifest.webmanifest", "/favicon.svg",
                "/icons/icon-192.png", "/icons/icon-512.png"];
 

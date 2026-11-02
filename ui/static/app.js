@@ -13,7 +13,7 @@ const STATUS_PL = {
 
 const state = {
   queue: { jobs: [], paused: false, blocked_by: null },
-  videos: [], gpu: null, system: null, connected: false, loaded: false,
+  videos: [], folders: [], gpu: null, system: null, connected: false, loaded: false,
 };
 
 // ---------- pomocnicze ----------
@@ -182,26 +182,6 @@ function trackOf(v) {
   }));
 }
 
-function videoCard(v) {
-  const run = Object.entries(v.stages).find(([, s]) => s.status === "running");
-  const job = activeJob(v.id);
-  return h("article", { class: "lecture" },
-    h("div", { class: "lecture-head" },
-      h("div", {},
-        h("a", { class: "vtitle", href: `#/video/${v.id}` }, v.title || v.id),
-        h("div", { class: "meta" },
-          [v.duration != null ? fmtDur(v.duration) : null, fmtDate(v.created), v.has_audio === false ? "bez audio" : null,
-            v.video_exists ? null : "brak pliku wideo"].filter(Boolean).join("  ·  "))),
-      h("div", { class: "lecture-side" },
-        job && job.status === "queued" ? chip("queued") : chip(v.overall === "idle" ? "pending" : v.overall,
-          v.overall === "idle" ? STATUS_PL.idle : null),
-        h("button", { class: "small danger", title: job ? "Najpierw anuluj zadanie" : "Usuń wykład", "aria-label": `Usuń wykład ${v.title || v.id}`,
-          disabled: !!job || v.overall === "running", onclick: () => openDeleteDialog(v) }, "Usuń"))),
-    trackOf(v),
-    run && run[1].progress && run[1].progress.message ? h("div", { class: "meta", style: "margin-top:8px" }, progressText(run[0], run[1].progress)) : null,
-    v.error && v.overall === "error" ? h("div", { class: "errline" }, v.error) : null);
-}
-
 function queuePanel() {
   const q = state.queue;
   const queued = q.jobs.filter((j) => j.status === "queued");
@@ -228,20 +208,6 @@ function queuePanel() {
     running.map((j) => row(j, -1)), queued.map(row),
     recent.length ? h("details", { style: "margin-top:10px" }, h("summary", { class: "small" }, "Ostatnio zakończone"),
       recent.map((j) => h("div", { class: "job" }, h("div", { class: "name" }, title(j), j.error ? h("div", { class: "small", style: "color:var(--accent)" }, j.error) : null), chip(j.status)))) : null);
-}
-
-function renderLibrary() {
-  const view = $("#view");
-  const list = state.videos.length
-    ? h("div", { class: "lectures" }, state.videos.map(videoCard))
-    : h("div", { class: "empty" }, state.loaded
-      ? ["Jeszcze nic tu nie ma.", h("div", { class: "small", style: "margin-top:8px" }, "Wrzuć nagranie do katalogu ", h("code", {}, "videos/"), " i dodaj je przyciskiem u góry.")]
-      : "Ładowanie…");
-  view.replaceChildren(
-    h("div", { class: "page-head" },
-      h("div", {}, h("h1", {}, "Wykłady"), h("p", {}, "Nagrania zamieniane w notatki, lokalnie na tym komputerze.")),
-      h("button", { class: "primary", onclick: openAddDialog }, "Dodaj nagranie")),
-    h("div", { class: "layout", style: "margin-top:22px" }, list, queuePanel()));
 }
 
 // ---------- dodawanie filmu ----------
@@ -463,10 +429,12 @@ function updateDetail() {
   const resumable = ["error", "cancelled", "interrupted", "stale"].includes(v.overall)
     || Object.values(v.stages).some((s) => ["stale", "pending"].includes(s.status) && v.overall !== "running");
   head.replaceChildren(...kids(
-    h("a", { href: "#/", class: "back" }, "← Wykłady"),
+    h("div", { class: "row", style: "gap:8px" }, h("a", { href: "#/", class: "back" }, "← Wykłady"),
+      ...folderChain(v.folder).flatMap((f) => [h("span", { class: "sep" }, "›"), h("a", { class: "back", href: `#/f/${f.id}` }, f.name)])),
     h("div", { class: "row spread detail-head" },
       h("div", {}, h("h1", {}, v.title || v.id),
-        h("div", { class: "meta" }, [v.duration != null ? fmtDur(v.duration) : null, fmtDate(v.created), v.has_audio === false ? "bez audio" : null, v.profile ? `profil ${v.profile}` : null].filter(Boolean).join("  ·  "))),
+        h("div", { class: "meta" }, [v.duration != null ? fmtDur(v.duration) : null, fmtDate(v.created), v.has_audio === false ? "bez audio" : null, v.profile ? `profil ${v.profile}` : null].filter(Boolean).join("  ·  ")),
+        h("div", { class: "linkrow" }, linkBtn("Zmień nazwę", () => openRenameLecture(v)), linkBtn("Przenieś do folderu", () => openMoveLecture(v)))),
       h("div", { class: "row" },
         job ? h("button", { class: "danger", onclick: () => cancelJob(job.id) }, job.status === "running" ? "Zatrzymaj" : "Usuń z kolejki") : null,
         !job && resumable ? h("button", { class: "primary", onclick: () => runVideo(v.id, {}) }, v.overall === "idle" ? "Uruchom" : "Wznów") : null,
@@ -555,8 +523,8 @@ function rerender() {
 
 async function refresh() {
   try {
-    const [queue, videos] = await Promise.all([api("/api/queue"), api("/api/videos")]);
-    state.queue = queue; state.videos = videos; state.loaded = true; state.connected = true;
+    const [queue, videos, folders] = await Promise.all([api("/api/queue"), api("/api/videos"), api("/api/folders")]);
+    state.queue = queue; state.videos = videos; state.folders = folders; state.loaded = true; state.connected = true;
   } catch (_) { /* SSE przejmie */ }
   rerender();
 }
@@ -571,7 +539,7 @@ function connect() {
   window.__es = es;
   es.addEventListener("state", (e) => {
     const d = JSON.parse(e.data);
-    state.queue = d.queue; state.videos = d.videos; state.gpu = d.gpu_holder;
+    state.queue = d.queue; state.videos = d.videos; state.gpu = d.gpu_holder; state.folders = d.folders || [];
     state.loaded = true; state.connected = true;
     rerender();
   });
