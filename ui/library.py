@@ -1,5 +1,7 @@
 """Biblioteka filmow: skan katalogu videos/, dodawanie i podsumowania stanu z work/*."""
+import os
 import re
+import shutil
 import unicodedata
 from pathlib import Path, PurePosixPath
 
@@ -45,18 +47,23 @@ class Library:
         return idx
 
     # --- pliki z katalogu videos/ ---
+    def _iter_files(self, max_depth=2):
+        """Wpisy (pliki lub dowiazania) wideo w videos/, bez rozwiazywania dowiazan."""
+        base = self.videos_dir.resolve()
+        for p in sorted(base.rglob("*")):
+            if not p.is_file() or p.suffix.lower() not in VIDEO_EXT or p.name.startswith("."):
+                continue
+            if len(p.relative_to(base).parts) > max_depth + 1:
+                continue
+            yield p
+
     def list_files(self, max_depth=2):
         idx = self._index()
         base = self.videos_dir.resolve()
         out = []
-        for p in sorted(base.rglob("*")):
-            if not p.is_file() or p.suffix.lower() not in VIDEO_EXT or p.name.startswith("."):
-                continue
-            rel = p.relative_to(base)
-            if len(rel.parts) > max_depth + 1:
-                continue
+        for p in self._iter_files(max_depth):
             st = p.stat()
-            out.append({"file": rel.as_posix(), "size": st.st_size, "mtime": st.st_mtime,
+            out.append({"file": p.relative_to(base).as_posix(), "size": st.st_size, "mtime": st.st_mtime,
                         "video_id": idx.get(str(p.resolve()))})
         return out
 
@@ -114,3 +121,42 @@ class Library:
         """Etapy, ktorych wyniki zostana usuniete przy uruchomieniu od `stage` (z --force)."""
         st = self.orchestrator(video_id).status()["stages"]
         return [s for s in STAGES[STAGES.index(stage):] if st[s]["status"] != "pending"]
+
+    # --- usuwanie ---
+    def library_entry(self, video_id):
+        """Wpis w videos/ (plik lub dowiazanie), ktory wskazuje na film tego wykladu, albo None."""
+        target = (read_json(self.workdir(video_id) / "meta.json", {}) or {}).get("video_path")
+        for p in self._iter_files():
+            if str(p.resolve()) == target:
+                return p
+        return None
+
+    def disk_usage(self, video_id):
+        total = 0
+        for root, _, files in os.walk(self.workdir(video_id)):
+            for f in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, f))
+                except OSError:
+                    pass
+        return total
+
+    def delete_preview(self, video_id):
+        wd = self.workdir(video_id)
+        entry = self.library_entry(video_id)
+        chats = read_json(wd / "chat.json", {"chats": []}) or {"chats": []}
+        return {"size_bytes": self.disk_usage(video_id),
+                "has_edited_notes": (wd / "lecture_notes.edited.md").exists(),
+                "chat_count": len(chats.get("chats", [])),
+                "video_entry": entry.relative_to(self.videos_dir.resolve()).as_posix() if entry else None,
+                "video_is_link": bool(entry and entry.is_symlink())}
+
+    def delete(self, video_id, delete_video=False):
+        """Trwale usuwa dane wykladu (work/<id>). Opcjonalnie wpis w videos/: dla dowiazania symbolicznego tylko
+        dowiazanie (cel zostaje). Zwraca {'deleted': id, 'video_deleted': bool}."""
+        wd = self.workdir(video_id)
+        entry = self.library_entry(video_id) if delete_video else None
+        shutil.rmtree(wd)
+        if entry is not None:
+            entry.unlink()  # unlink na dowiazaniu usuwa dowiazanie, nie plik docelowy
+        return {"deleted": video_id, "video_deleted": entry is not None}

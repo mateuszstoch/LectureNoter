@@ -776,3 +776,89 @@ def test_cli_missing_video_message(tmp_path):
     r = subprocess.run([sys.executable, str(ROOT / "main.py"), str(tmp_path / "nie-ma.mp4"), "--workdir", str(tmp_path / "w")],
                        capture_output=True, text=True, timeout=60)
     assert r.returncode == 1 and "brak pliku wideo" in r.stderr and "nie-ma.mp4" in r.stderr
+
+
+# ---------- usuwanie wykladow ----------
+def seed_lecture(lib, name="ok.mp4"):
+    vid = lib.add_video(name)
+    wd = lib.workdir(vid)
+    (wd / "lecture_notes.md").write_text("notatki", encoding="utf-8")
+    (wd / "lecture_notes.edited.md").write_text("moje", encoding="utf-8")
+    (wd / "frames").mkdir()
+    (wd / "frames" / "frame_000001_t00001.jpg").write_bytes(b"x" * 1000)
+    (wd / "chat.json").write_text(json.dumps({"chats": [{"id": "a"}, {"id": "b"}]}))
+    return vid, wd
+
+
+def test_delete_preview_and_delete_keeps_video_file(client, env):
+    c, jm = client
+    lib, _, _, videos, work = env
+    vid, wd = seed_lecture(lib)
+    p = c.get("/api/videos/ok/delete-preview").json()
+    assert p["size_bytes"] >= 1000 and p["has_edited_notes"] and p["chat_count"] == 2
+    assert p["video_entry"] == "ok.mp4" and p["video_is_link"] is False
+    r = c.delete("/api/videos/ok").json()
+    assert r == {"deleted": "ok", "video_deleted": False}
+    assert not wd.exists() and (videos / "ok.mp4").exists()  # film zostaje
+    assert c.get("/api/videos").json() == [] and c.get("/api/videos/ok").status_code == 400
+    # film mozna dodac ponownie i dostaje czysty stan
+    assert lib.add_video("ok.mp4") == "ok" and not (lib.workdir("ok") / "lecture_notes.md").exists()
+
+
+def test_delete_with_video_removes_entry_but_only_the_link_for_symlinks(client, env, tmp_path):
+    c, jm = client
+    lib, _, _, videos, work = env
+    seed_lecture(lib)
+    assert c.delete("/api/videos/ok", params={"delete_video": "true"}).json() == {"deleted": "ok", "video_deleted": True}
+    assert not (videos / "ok.mp4").exists()
+    # dowiazanie symboliczne: kasujemy dowiazanie, cel zostaje
+    outside = tmp_path / "poza" / "wyklad.mp4"
+    make_video(outside)
+    (videos / "link.mp4").symlink_to(outside)
+    vid = lib.add_video("link.mp4")
+    assert c.get(f"/api/videos/{vid}/delete-preview").json()["video_is_link"] is True
+    assert c.delete(f"/api/videos/{vid}", params={"delete_video": "true"}).json()["video_deleted"] is True
+    assert not (videos / "link.mp4").exists() and not (videos / "link.mp4").is_symlink() and outside.exists()
+
+
+def test_delete_video_flag_ignored_when_file_not_in_library(client, env):
+    c, jm = client
+    lib, _, _, videos, work = env
+    seed_lecture(lib)
+    (videos / "ok.mp4").rename(videos / "ok-przeniesiony.txt")  # wpis w videos/ juz nie wskazuje na film
+    r = c.delete("/api/videos/ok", params={"delete_video": "true"}).json()
+    assert r["video_deleted"] is False and (videos / "ok-przeniesiony.txt").exists()
+
+
+def test_delete_blocked_for_active_job_live_run_and_chat(client, env):
+    c, jm = client
+    lib, _, _, videos, work = env
+    seed_lecture(lib)
+    j = jm.enqueue("ok")
+    for url in ("/api/videos/ok/delete-preview",):
+        assert c.get(url).status_code == 409
+    r = c.delete("/api/videos/ok")
+    assert r.status_code == 409 and "kolejce" in r.json()["detail"] and lib.workdir("ok").exists()
+    jm.cancel(j["id"])
+    import run_state
+    run_state.write_run_state(lib.workdir("ok"), status="running", pid=os.getppid(), heartbeat=time.time())
+    assert c.delete("/api/videos/ok").status_code == 409  # zywe uruchomienie z CLI
+    run_state.write_run_state(lib.workdir("ok"), status="done")
+    c.app.state.chat._generating, c.app.state.chat._gen_video = True, "ok"
+    assert c.delete("/api/videos/ok").status_code == 409
+    c.app.state.chat._generating, c.app.state.chat._gen_video = False, None
+    assert c.delete("/api/videos/ok").status_code == 200
+
+
+def test_delete_forgets_finished_jobs_and_rejects_bad_ids(client, env):
+    c, jm = client
+    lib, _, _, videos, work = env
+    seed_lecture(lib)
+    j = jm.enqueue("ok")
+    wait_for(jm, j["id"], "done")
+    assert any(x["video_id"] == "ok" for x in jm.snapshot()["jobs"])
+    assert c.delete("/api/videos/ok").status_code == 200
+    assert not any(x["video_id"] == "ok" for x in jm.snapshot()["jobs"])
+    for bad in ("nie-ma", "..%2F..%2Fetc", "A B"):
+        assert c.delete(f"/api/videos/{bad}").status_code in (400, 404, 405)
+    assert work.exists() and (videos / "other.mp4").exists()  # nic poza wykladem nie ucierpialo

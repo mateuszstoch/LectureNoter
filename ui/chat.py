@@ -105,6 +105,7 @@ class ChatService:
         self.ccfg = cfg.get("chat", {})
         self._lock = threading.RLock()
         self._generating = False
+        self._gen_video = None
         self._held = False
         self._model = None
         self._timer = None
@@ -171,6 +172,10 @@ class ChatService:
                 self.gpu.release()
                 self._held, self._model = False, None
             return True
+
+    def is_generating_for(self, video_id):
+        with self._lock:
+            return self._generating and self._gen_video == video_id
 
     def preempt(self):
         """Wywolywane przez kolejke zadan, gdy zadanie czeka na GPU zajete przez czat."""
@@ -252,6 +257,7 @@ class ChatService:
             yield "error", str(e)
             return
         answer, sources, stopped, failed, user_added = [], [], True, None, False
+        self._gen_video = video_id
         try:
             messages, sources = self.build_messages(content, chat, wd, model)
             now = time.time()
@@ -291,6 +297,7 @@ class ChatService:
                 pass
             with self._lock:
                 self._generating = False
+                self._gen_video = None
             self._schedule_release()
         if cancel is not None and cancel.is_set():
             return

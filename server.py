@@ -29,7 +29,7 @@ from ui import materials, notes as notes_mod
 from ui.chat import ChatError, ChatService, ChatStore
 from ui.jobs import JobError, JobManager
 from ui.library import Library, LibraryError
-from run_state import read_run_state
+from run_state import is_live, read_run_state
 
 ROOT = Path(__file__).resolve().parent
 
@@ -162,6 +162,26 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
     @app.get("/api/videos/{vid}")
     def video(vid: str):
         return guard(lambda: lib.summary(vid))
+
+    def ensure_deletable(vid):
+        wd = guard(lambda: lib.workdir(vid))
+        if jm.has_active(vid) or is_live(read_run_state(wd)):
+            raise HTTPException(409, "Film jest w kolejce lub trwa jego przetwarzanie. Najpierw anuluj zadanie.")
+        if chat.is_generating_for(vid):
+            raise HTTPException(409, "Trwa odpowiedz czatu dla tego wykladu. Zatrzymaj ja lub poczekaj.")
+
+    @app.get("/api/videos/{vid}/delete-preview")
+    def delete_preview(vid: str):
+        ensure_deletable(vid)
+        return guard(lambda: lib.delete_preview(vid))
+
+    @app.delete("/api/videos/{vid}")
+    def delete_video(vid: str, delete_video: bool = False):
+        ensure_deletable(vid)
+        res = guard(lambda: lib.delete(vid, delete_video))
+        jm.forget(vid)
+        logger.info(f"usunieto wyklad {vid} (plik wideo usuniety: {res['video_deleted']})")
+        return res
 
     @app.get("/api/videos/{vid}/impact")
     def impact(vid: str, stage: str):

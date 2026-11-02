@@ -92,8 +92,9 @@ function toast(msg) {
   b.className = "banner warn";
   b.textContent = msg;
   b.hidden = false;
+  toast.active = true; // updateBanner nie nadpisuje komunikatu, dopoki nie minie czas
   clearTimeout(toast.t);
-  toast.t = setTimeout(updateBanner, 5000);
+  toast.t = setTimeout(() => { toast.active = false; updateBanner(); }, 5000);
 }
 
 // ---------- okno dialogowe ----------
@@ -107,6 +108,7 @@ function closeDialog() { const d = $("#dlg"); if (d.open) d.close(); }
 
 // ---------- pasek systemowy i baner ----------
 function updateBanner() {
+  if (toast.active) return;
   const b = $("#banner");
   if (!state.connected) {
     b.className = "banner";
@@ -162,8 +164,11 @@ function videoCard(v) {
         h("div", { class: "muted small" },
           [v.duration != null ? fmtDur(v.duration) : null, fmtDate(v.created), v.has_audio === false ? "bez audio" : null,
             v.video_exists ? null : "brak pliku wideo"].filter(Boolean).join(" · "))),
-      job && job.status === "queued" ? chip("queued") : chip(v.overall === "idle" ? "pending" : v.overall,
-        v.overall === "idle" ? STATUS_PL.idle : null)),
+      h("div", { class: "row", style: "gap:8px" },
+        job && job.status === "queued" ? chip("queued") : chip(v.overall === "idle" ? "pending" : v.overall,
+          v.overall === "idle" ? STATUS_PL.idle : null),
+        h("button", { class: "small danger", title: job ? "Najpierw anuluj zadanie" : "Usuń wykład", "aria-label": `Usuń wykład ${v.title || v.id}`,
+          disabled: !!job || v.overall === "running", onclick: () => openDeleteDialog(v) }, "Usuń"))),
     h("div", { class: "pills" }, STAGES.map((s) => h("div", { class: `pill ${v.stages[s].status}` },
       h("b", {}, STAGE_SHORT[s]), STATUS_PL[v.stages[s].status]))),
     run ? h("div", { class: "small muted", style: "margin-top:8px" }, progressText(run[0], run[1].progress), progressBar(run[1].progress)) : null,
@@ -335,6 +340,36 @@ async function openRegenDialog(v, stage) {
       } }, "Regeneruj")));
 }
 
+async function openDeleteDialog(v) {
+  const body = h("div", { class: "muted" }, "Sprawdzanie danych wykładu…");
+  openDialog(h("h2", {}, "Usuń wykład"), body);
+  let p;
+  try { p = await api(`/api/videos/${v.id}/delete-preview`); } catch (e) { body.replaceChildren(h("div", { class: "banner", style: "margin:0" }, e.message), h("div", { class: "actions" }, h("button", { onclick: closeDialog }, "Zamknij"))); return; }
+  const mb = p.size_bytes > 1e6 ? `${(p.size_bytes / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(p.size_bytes / 1e3))} KB`;
+  const alsoVideo = h("input", { type: "checkbox", id: "delvideo" });
+  const lost = ["transkrypt, klatki z tablicy i opisy (VLM)", "wygenerowane notatki"];
+  if (p.has_edited_notes) lost.push("Twoja edytowana wersja notatek i jej historia");
+  if (p.chat_count) lost.push(`rozmowy czatu (${p.chat_count})`);
+  body.replaceChildren(
+    h("p", {}, h("b", {}, v.title || v.id), `: usunięte zostaną dane przetwarzania (${mb}) bez możliwości przywrócenia:`),
+    h("ul", {}, lost.map((x) => h("li", {}, x))),
+    p.has_edited_notes || p.chat_count ? h("div", { class: "small", style: "color:var(--warn)" }, "Jeśli chcesz zachować notatki, najpierw wyeksportuj je (zakładka Notatki → Markdown/Word/PDF).") : null,
+    p.video_entry ? h("label", { class: "row", style: "margin-top:12px;align-items:flex-start" }, alsoVideo,
+      h("span", {}, `Usuń także plik wideo z katalogu videos/ (${p.video_entry})`,
+        h("div", { class: "muted small" }, p.video_is_link ? "To dowiązanie symboliczne: usunięte zostanie tylko dowiązanie, plik docelowy zostaje." : "Plik zostanie trwale usunięty z dysku."))) :
+      h("div", { class: "muted small", style: "margin-top:10px" }, "Oryginalny plik wideo nie jest w katalogu videos/ i zostanie nietknięty."),
+    h("div", { class: "actions" }, h("button", { onclick: closeDialog }, "Anuluj"),
+      h("button", { class: "danger", onclick: async () => {
+        try {
+          await api(`/api/videos/${v.id}?delete_video=${alsoVideo.checked}`, { method: "DELETE" });
+          closeDialog();
+          if (location.hash !== "#/") location.hash = "#/";
+          await refresh();
+          toast(`Usunięto wykład „${v.title || v.id}”.`);
+        } catch (e) { closeDialog(); toast(e.message); }
+      } }, "Usuń wykład")));
+}
+
 async function openDiagnostics(videoId) {
   const body = h("div", { class: "muted" }, "Ładowanie…");
   openDialog(h("h2", {}, "Szczegóły błędu"), body, h("div", { class: "actions" }, h("button", { onclick: closeDialog }, "Zamknij")));
@@ -380,7 +415,8 @@ function updateDetail() {
       h("div", { class: "row" },
         job ? h("button", { class: "danger", onclick: () => cancelJob(job.id) }, job.status === "running" ? "Zatrzymaj" : "Usuń z kolejki") : null,
         !job && resumable ? h("button", { class: "primary", onclick: () => runVideo(v.id, {}) }, v.overall === "idle" ? "Uruchom" : "Wznów") : null,
-        h("button", { disabled: !!job, onclick: () => openRerunAllDialog(v) }, "Uruchom całość od nowa"))),
+        h("button", { disabled: !!job, onclick: () => openRerunAllDialog(v) }, "Uruchom całość od nowa"),
+        h("button", { class: "danger", disabled: !!job || v.overall === "running", title: job ? "Najpierw anuluj zadanie" : "", onclick: () => openDeleteDialog(v) }, "Usuń wykład"))),
     !v.video_exists ? h("div", { class: "banner", style: "margin:10px 0 0" }, `Plik wideo nie istnieje: ${v.video_path}`) : null,
     v.error && v.overall === "error" ? h("div", { class: "banner", style: "margin:10px 0 0" },
       h("div", {}, `Błąd: ${v.error}`),

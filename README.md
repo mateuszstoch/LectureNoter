@@ -64,6 +64,7 @@ Opcje: `LECTURENOTER_VENV` (katalog środowiska), `LECTURENOTER_PYTHON` (interpr
 ## Aplikacja
 
 - **Biblioteka:** wybór filmu z katalogu `videos/`, lista z postępem czterech etapów, trwała kolejka (jedno zadanie naraz; pauza, zmiana kolejności, anulowanie).
+- **Usuwanie:** przycisk „Usuń” na karcie wykładu lub w jego szczegółach. Kasuje trwale dane przetwarzania (`work/<film>`: transkrypt, klatki, notatki, edycje, rozmowy) po potwierdzeniu z listą strat. Oryginalny film zostaje, chyba że zaznaczysz „Usuń także plik wideo” (dla dowiązania symbolicznego znika tylko dowiązanie). Blokowane, gdy film jest w kolejce, przetwarzany lub trwa odpowiedź czatu.
 - **Szczegóły filmu:** regeneracja pojedynczego etapu (z podglądem, co zostanie usunięte), uruchomienie całości od nowa, wznowienie po awarii, logi na żywo.
 - **Notatki:** Markdown z wzorami (KaTeX, działa offline), spis treści, wyszukiwanie, klikalne znaczniki czasu (pokazują tablicę i mowę z danego momentu). Edycja z historią wersji: wersja edytowana zapisuje się osobno (`lecture_notes.edited.md`) i nie jest nadpisywana przy ponownej generacji. Eksport: Markdown, PDF (przycisk „PDF” otwiera okno drukowania, wybierz „Zapisz jako PDF”), Word (wymaga `pandoc`).
 - **Materiały:** klatki z tablicy i przeszukiwalny transkrypt.

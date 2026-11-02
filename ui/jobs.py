@@ -128,6 +128,16 @@ class JobManager:
             self.jobs = [x for x in self.jobs if x["status"] != "queued"] + queued
             self._save()
 
+    def has_active(self, video_id):
+        with self._lock:
+            return any(j["video_id"] == video_id and j["status"] in ACTIVE for j in self.jobs)
+
+    def forget(self, video_id):
+        """Usuwa z historii zakonczone zadania filmu (po usunieciu wykladu)."""
+        with self._lock:
+            self.jobs = [j for j in self.jobs if not (j["video_id"] == video_id and j["status"] not in ACTIVE)]
+            self._save()
+
     def set_paused(self, paused):
         with self._lock:
             self.paused = bool(paused)
