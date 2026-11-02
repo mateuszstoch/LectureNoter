@@ -1,0 +1,4 @@
+# Skrypty uruchomieniowe musza zachowac swoje konce linii (sh: LF, bat: CRLF), takze po klonowaniu na Windowsie
+*.sh text eol=lf
+*.bat text eol=crlf
+scripts/launch.py text eol=lf

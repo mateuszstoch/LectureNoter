@@ -1,13 +1,16 @@
 @echo off
 setlocal EnableExtensions
 rem LectureNoter: uruchamia serwer w WSL (jesli nie dziala) i otwiera aplikacje w osobnym oknie.
-rem Zmienne opcjonalne (ustaw przed uruchomieniem lub w systemie):
-rem   LECTURENOTER_DIR     katalog projektu w WSL, domyslnie ~/LectureNoter (bez spacji)
+rem Folder projektu jest wyznaczany z polozenia tego pliku (..\ wzgledem folderu scripts) i zamieniany na sciezke WSL,
+rem wiec projekt moze lezec na dysku Windows (np. C:\Users\...\LectureNoter -> /mnt/c/Users/.../LectureNoter).
+rem Zmienne opcjonalne:
+rem   LECTURENOTER_DIR     sciezka projektu W WSL (nadpisuje automatyczne wykrywanie), np. /home/jan/LectureNoter
 rem   LECTURENOTER_DISTRO  nazwa dystrybucji WSL, np. Ubuntu (gdy domyslna to np. docker-desktop)
 rem Plik jest celowo bez polskich znakow (kodowanie konsoli Windows).
 
 set "URL=http://localhost:8000"
-if not defined LECTURENOTER_DIR set "LECTURENOTER_DIR=~/LectureNoter"
+for %%I in ("%~dp0..") do set "PROJECT_WIN=%%~fI"
+set "PROJECT_FWD=%PROJECT_WIN:\=/%"
 set "DISTRO_ARG="
 if defined LECTURENOTER_DISTRO set "DISTRO_ARG=-d %LECTURENOTER_DISTRO%"
 
@@ -19,14 +22,23 @@ if errorlevel 1 goto nocurl
 curl.exe -s -o nul "%URL%/api/health"
 if not errorlevel 1 goto open
 
-echo Uruchamiam serwer w WSL (katalog: %LECTURENOTER_DIR%)...
-echo Okno "LectureNoter server" pokaze ewentualne bledy. Nie zamykaj go, dopoki uzywasz aplikacji.
-start "LectureNoter server" wsl.exe %DISTRO_ARG% bash -lc "cd %LECTURENOTER_DIR% && source .venv/bin/activate && python server.py; echo; echo Serwer zakonczyl prace. Nacisnij Enter, aby zamknac okno.; read"
+set "PROJECT_WSL="
+if defined LECTURENOTER_DIR set "PROJECT_WSL=%LECTURENOTER_DIR%"
+if defined PROJECT_WSL goto havepath
+for /f "usebackq delims=" %%P in (`wsl.exe %DISTRO_ARG% bash -lc "wslpath -u -a '%PROJECT_FWD%'"`) do set "PROJECT_WSL=%%P"
+if not defined PROJECT_WSL goto nopath
+:havepath
+
+echo Projekt (Windows): %PROJECT_WIN%
+echo Projekt (WSL):     %PROJECT_WSL%
+echo Uruchamiam serwer w WSL. Okno "LectureNoter server" pokaze postep i ewentualne bledy.
+echo Pierwsze uruchomienie instaluje zaleznosci i moze potrwac kilka minut. Nie zamykaj tego okna.
+start "LectureNoter server" wsl.exe %DISTRO_ARG% bash -lc "cd '%PROJECT_WSL%' && python3 scripts/launch.py; echo; echo Serwer zakonczyl prace. Nacisnij Enter, aby zamknac okno.; read"
 
 set /a tries=0
 :wait
 set /a tries+=1
-if %tries% gtr 90 goto fail
+if %tries% gtr 900 goto fail
 timeout /t 1 /nobreak >nul
 curl.exe -s -o nul "%URL%/api/health"
 if errorlevel 1 goto wait
@@ -57,10 +69,16 @@ echo Nie znaleziono curl.exe (Windows 10 1803+ i Windows 11 go maja). Zaktualizu
 pause
 exit /b 1
 
+:nopath
+echo Nie udalo sie zamienic sciezki projektu na sciezke WSL:
+echo   %PROJECT_WIN%
+echo Sprawdz, czy WSL dziala (wsl -l -v). Gdy domyslna dystrybucja to np. docker-desktop,
+echo ustaw LECTURENOTER_DISTRO=Ubuntu. Mozesz tez podac sciezke recznie: LECTURENOTER_DIR=/mnt/c/...
+pause
+exit /b 1
+
 :fail
 echo.
-echo Serwer nie odpowiada po 90 s. Sprawdz komunikat w oknie "LectureNoter server".
-echo Najczestsze przyczyny: zly katalog projektu (ustaw LECTURENOTER_DIR), brak .venv,
-echo inna domyslna dystrybucja WSL (ustaw LECTURENOTER_DISTRO), blad Pythona.
+echo Serwer nie odpowiada po 15 minutach. Sprawdz komunikat w oknie "LectureNoter server".
 pause
 exit /b 1

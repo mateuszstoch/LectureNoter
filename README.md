@@ -16,57 +16,50 @@ Wyniki trafiają do `work/<nazwa_filmu>/`. Przerwane przetwarzanie wznawia się 
 **Backend działa tylko na Linuksie.** Na Windowsie uruchamiasz go w **WSL2** (nie natywnie: `python server.py` w PowerShellu się nie uruchomi). Potrzebne:
 
 - karta NVIDIA ze sterownikiem (na Windowsie sterownik instalujesz tylko w Windowsie, w WSL `nvidia-smi` ma pokazać kartę)
-- Python 3.11+, `ffmpeg`, [Ollama](https://ollama.com)
+- Python 3.10+ (zalecany 3.11), `ffmpeg`, [Ollama](https://ollama.com) uruchomiona w WSL
 - opcjonalnie `pandoc` (eksport notatek do Worda)
 
-## Instalacja (Linux lub WSL2 / Ubuntu)
+## Instalacja i uruchomienie
+
+Projekt możesz mieć **na dysku Windows** (np. `C:\Users\...\LectureNoter`) albo w systemie plików WSL/Linuksa. Środowisko Pythona i zależności instalują się same przy pierwszym uruchomieniu (skrypt `scripts/launch.py`), więc ręczne `venv`/`pip` nie jest potrzebne. Jednorazowo potrzebujesz tylko pakietów systemowych i modeli (w terminalu WSL/Linux):
 
 ```bash
-git clone https://github.com/mateuszstoch/LectureNoter.git ~/LectureNoter
-cd ~/LectureNoter
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-sudo apt install ffmpeg pandoc
-
+sudo apt install ffmpeg pandoc python3-venv
 ollama pull qwen2.5vl:7b
 ollama pull qwen2.5:7b-instruct    # karta 8 GB
 ollama pull qwen2.5:14b-instruct   # karta 16 GB (opcjonalnie)
 ```
 
-Projekt i nagrania trzymaj w systemie plików WSL (np. `~/LectureNoter`), nie w `/mnt/c/...`, bo tam odczyt jest dużo wolniejszy. Nagrania wrzucaj do `~/LectureNoter/videos/` (dowiązania symboliczne działają).
-
-## Uruchomienie
+Wymagany jest Python **3.10+** (zalecany 3.11). Na starszym Ubuntu: `sudo add-apt-repository ppa:deadsnakes/ppa && sudo apt update && sudo apt install python3.11 python3.11-venv python3.11-dev`. Skrypt sam wybierze najnowszy znaleziony interpreter (lub użyj `LECTURENOTER_PYTHON`).
 
 ### Windows 11 (WSL2)
 
-Użyj skryptu `scripts\start.bat`: uruchamia serwer w WSL (jeśli jeszcze nie działa) i otwiera aplikację w oknie Edge/Chrome bez paska przeglądarki. Skopiuj go na Pulpit lub przypnij do paska zadań.
+Uruchom `scripts\start.bat` (dwuklik albo skrót na Pulpicie/pasku zadań). Skrypt:
 
-- Projekt w innym miejscu niż `~/LectureNoter`: ustaw zmienną środowiskową `LECTURENOTER_DIR` (ścieżka w WSL, bez spacji). Domyślna dystrybucja WSL inna niż Ubuntu (np. `docker-desktop`): ustaw `LECTURENOTER_DISTRO=Ubuntu` (nazwy sprawdzisz przez `wsl -l`).
-- Skrypt otwiera okno „LectureNoter server” z logiem serwera. Zostaw je otwarte; przy błędzie zobaczysz w nim komunikat. Jeśli nic się nie dzieje, uruchom `scripts\start.bat` z `cmd` (nie dwuklikiem), żeby zobaczyć komunikaty skryptu.
-- Aplikację można też zainstalować z przeglądarki (Edge: menu → Aplikacje → „Zainstaluj tę witrynę jako aplikację”). Okno zainstalowanej aplikacji nie uruchamia serwera: najpierw musi działać `start.bat` (albo ręcznie jak niżej).
+1. wyznacza folder projektu z położenia samego pliku i zamienia go na ścieżkę WSL (`C:\Users\Jan\LectureNoter` → `/mnt/c/Users/Jan/LectureNoter`),
+2. uruchamia serwer w WSL (okno „LectureNoter server” pokazuje postęp i błędy; pierwsze uruchomienie instaluje zależności i trwa kilka minut),
+3. otwiera aplikację w oknie Edge/Chrome bez paska przeglądarki.
 
-Ręcznie: w terminalu WSL
+- Gdy projekt jest na dysku Windows (`/mnt/...`), środowisko Pythona jest tworzone w `~/.local/share/lecturenoter/venv` (NTFS jest wolny i słabo znosi dowiązania). Odczyt plików z `/mnt/c` jest wolniejszy niż z systemu plików WSL, ale działa.
+- Domyślna dystrybucja WSL inna niż Ubuntu (np. `docker-desktop`): ustaw zmienną `LECTURENOTER_DISTRO=Ubuntu` (nazwy: `wsl -l`).
+- Własna ścieżka projektu w WSL: `LECTURENOTER_DIR=/home/jan/LectureNoter`.
+- Jeśli nic się nie dzieje, uruchom `scripts\start.bat` z `cmd` (nie dwuklikiem), żeby zobaczyć komunikaty.
+- Aplikację można też zainstalować z przeglądarki (Edge: menu → Aplikacje → „Zainstaluj tę witrynę jako aplikację”). Okno zainstalowanej aplikacji nie uruchamia serwera: najpierw musi działać `start.bat`.
 
-```bash
-cd ~/LectureNoter && source .venv/bin/activate && python server.py
-```
-
-a w przeglądarce Windowsa otwórz `http://localhost:8000`.
-
-### Linux
+### Linux / terminal WSL
 
 ```bash
-source .venv/bin/activate
-python server.py        # http://127.0.0.1:8000 (tylko lokalnie)
+scripts/start.sh        # z dowolnego katalogu; http://localhost:8000
 ```
+
+Opcje: `LECTURENOTER_VENV` (katalog środowiska), `LECTURENOTER_PYTHON` (interpreter), argumenty trafiają do serwera (np. `scripts/start.sh --port 8001`).
 
 ### Wskazówki dla WSL2
 
 - **Ollama zainstaluj w WSL** i nie uruchamiaj jej równolegle w Windowsie (dwa serwery mogą trzymać modele w VRAM jednocześnie). Bez systemd uruchom ją ręcznie: `ollama serve`.
 - W `%UserProfile%\.wslconfig` możesz zwiększyć pamięć: `[wsl2]` i `memory=24GB` (domyślnie WSL dostaje ok. 50% RAM). Po zmianie: `wsl --shutdown`.
 - Windows zajmuje ok. 0,5–1 GB VRAM. Na karcie 8 GB zamknij przeglądarkę i inne programy używające GPU na czas przetwarzania.
-- Błąd `libcublas.so.12 is not found`: `pip install -r requirements.txt` ponownie w aktywnym `.venv`.
+- Błąd `libcublas.so.12 is not found`: uruchom ponownie `start.bat`/`start.sh` (doinstaluje zależności) albo usuń środowisko venv, żeby powstało od nowa.
 
 ## Aplikacja
 
