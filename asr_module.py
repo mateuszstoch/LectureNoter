@@ -1,8 +1,10 @@
 """Etap 1: ekstrakcja audio i transkrypcja (faster-whisper). Uruchamiany w osobnym podprocesie."""
 import gc
 import subprocess
+import wave
 from pathlib import Path
 
+import numpy as np
 from loguru import logger
 
 from io_utils import atomic_write_json, fmt_ts
@@ -14,6 +16,22 @@ HALLUCINATIONS = ("dziękuję za uwagę", "napisy stworzone przez", "napisy wyko
 def extract_audio(video, wav):
     subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-y", "-i", str(video), "-vn", "-ac", "1",
                     "-ar", "16000", "-c:a", "pcm_s16le", str(wav)], check=True)
+
+
+def load_wav16k(path):
+    """Wczytuje WAV 16 kHz mono 16-bit (wynik extract_audio) jako float32 w [-1, 1].
+
+    Podajemy modelowi gotowa tablice zamiast sciezki, wiec faster-whisper nie uzywa wlasnego dekodera (PyAV):
+    stare wersje `av` nie maja parametru `metadata_errors` w av.open() i wywalaja sie przy czytaniu pliku."""
+    with wave.open(str(path), "rb") as w:
+        if (w.getframerate(), w.getnchannels(), w.getsampwidth()) != (16000, 1, 2):
+            raise ValueError(f"oczekiwano WAV 16 kHz mono 16-bit, jest: {w.getframerate()} Hz, "
+                             f"{w.getnchannels()} kan., {8 * w.getsampwidth()} bit")
+        frames = w.readframes(w.getnframes())
+    audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+    if audio.size == 0:
+        raise ValueError("sciezka audio jest pusta (film bez dzwieku?)")
+    return audio
 
 
 def is_hallucination(text):
@@ -29,12 +47,14 @@ def run_asr(video, workdir, cfg, language="pl", progress=None):
         progress.update(0, 1, "ekstrakcja audio")
     logger.info(f"ASR: ekstrakcja audio z {Path(video).name}")
     extract_audio(video, wav)
+    audio = load_wav16k(wav)
+    logger.info(f"ASR: audio {len(audio) / 16000:.0f} s ({audio.nbytes / 1e6:.0f} MB w pamieci)")
     logger.info(f"ASR: ladowanie modelu {cfg['model']} (cuda, {cfg['compute_type']})")
     model = WhisperModel(cfg["model"], device="cuda", compute_type=cfg["compute_type"])
     logger.info("ASR: model zaladowany, start transkrypcji")
     try:
         segments, info = model.transcribe(
-            str(wav), language=language, vad_filter=cfg["vad_filter"], beam_size=cfg["beam_size"],
+            audio, language=language, vad_filter=cfg["vad_filter"], beam_size=cfg["beam_size"],
             condition_on_previous_text=False)
         out, next_log = [], 60
         for s in segments:
