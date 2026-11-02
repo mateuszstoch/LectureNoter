@@ -8,6 +8,7 @@ import contextlib
 import shutil
 import subprocess
 import tempfile
+import threading
 
 import uvicorn
 import yaml
@@ -21,6 +22,7 @@ from gpu_lock import GpuLock
 from main import STAGES
 from ollama_client import OllamaClient, pick_profile, total_vram_gb, vram_used_gb
 from ui import materials, notes as notes_mod
+from ui.chat import ChatError, ChatService, ChatStore
 from ui.jobs import JobError, JobManager
 from ui.library import Library, LibraryError
 
@@ -53,6 +55,15 @@ class NotesBody(BaseModel):
     md: str
 
 
+class ChatCreate(BaseModel):
+    title: str | None = None
+
+
+class ChatMessage(BaseModel):
+    content: str
+    model: str | None = None
+
+
 class MoveRequest(BaseModel):
     position: int
 
@@ -69,7 +80,7 @@ def tail_lines(path, n=200):
         return [], 0
 
 
-def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, extra_hosts=()):
+def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, extra_hosts=(), ollama=None):
     videos_dir = Path(videos_dir or ROOT / cfg["paths"]["videos_dir"])
     work_dir = Path(work_dir or ROOT / cfg["paths"]["work_dir"])
     lib = Library(videos_dir, work_dir, cfg)
@@ -83,6 +94,10 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
         jm.stop()
 
     app = FastAPI(title="LectureNoter", lifespan=lifespan)
+    ollama = ollama or OllamaClient(timeout=cfg.get("chat", {}).get("timeout_s", 600))
+    chat = ChatService(lib, gpu, cfg, ollama)
+    jm.set_preempt(chat.preempt)  # zadanie czekajace na GPU zwalnia model czatu (gdy ten nie generuje)
+    app.state.chat = chat
     # ochrona przed DNS rebinding: tylko lokalne nazwy hosta
     app.add_middleware(TrustedHostMiddleware,
                        allowed_hosts=["localhost", "127.0.0.1", "[::1]", *extra_hosts])
@@ -250,6 +265,79 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
     def get_context(vid: str, t: float):
         return materials.context_at(wd_of(vid), t)
 
+    # --- czat ---
+    def chat_guard(fn):
+        try:
+            return fn()
+        except ChatError as e:
+            raise HTTPException(404 if "nie ma takiej" in str(e) else 400, str(e))
+
+    @app.get("/api/chat/status")
+    def chat_status():
+        st = chat.status()
+        st["default_model"] = chat.default_model()
+        return st
+
+    @app.post("/api/chat/release")
+    def chat_release():
+        if not chat.release():
+            raise HTTPException(409, "Trwa generowanie odpowiedzi.")
+        return chat.status()
+
+    @app.get("/api/videos/{vid}/chats")
+    def chats(vid: str):
+        return ChatStore(wd_of(vid)).list()
+
+    @app.post("/api/videos/{vid}/chats")
+    def chat_new(vid: str, req: ChatCreate):
+        return ChatStore(wd_of(vid)).create(req.title)
+
+    @app.get("/api/videos/{vid}/chats/{cid}")
+    def chat_get(vid: str, cid: str):
+        return chat_guard(lambda: ChatStore(wd_of(vid)).get(cid))
+
+    @app.delete("/api/videos/{vid}/chats/{cid}")
+    def chat_delete(vid: str, cid: str):
+        chat_guard(lambda: ChatStore(wd_of(vid)).delete(cid))
+        return {"ok": True}
+
+    @app.post("/api/videos/{vid}/chats/{cid}/messages")
+    async def chat_message(vid: str, cid: str, req: ChatMessage, request: Request):
+        wd_of(vid)
+        chat_guard(lambda: ChatStore(wd_of(vid)).get(cid))
+
+        def sse(event, data):
+            return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+        async def gen():
+            cancel = threading.Event()
+            it = chat.stream_answer(vid, cid, req.content, req.model, cancel)
+            try:
+                while True:
+                    nxt = asyncio.ensure_future(asyncio.to_thread(next, it, None))
+                    while True:
+                        # Starlette nie nasluchuje rozlaczenia w trakcie odpowiedzi, wiec sprawdzamy je sami co sekunde:
+                        # inaczej Stop w czasie ladowania modelu/przetwarzania promptu nic by nie zatrzymal
+                        done, _ = await asyncio.wait({nxt}, timeout=1.0)
+                        if done:
+                            break
+                        if not cancel.is_set() and await request.is_disconnected():
+                            cancel.set()
+                    item = await nxt
+                    if item is None:
+                        break
+                    yield sse(*item)
+                    if cancel.is_set():
+                        break
+            finally:
+                cancel.set()  # przerywa petle tokenow (takze gdy generator wlasnie dziala w watku)
+                try:
+                    it.close()  # zachowuje czesciowa odpowiedz i zwalnia stan generowania
+                except ValueError:
+                    pass  # generator jeszcze w trakcie: zakonczy sie sam po zobaczeniu `cancel`
+        return StreamingResponse(gen(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
     def build_state():
         return {"queue": jm.snapshot(), "videos": lib.list_videos(), "gpu_holder": gpu.holder()}
     app.state.build_state = build_state
@@ -307,8 +395,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
+    ap.add_argument("--config", default=str(ROOT / "config.yaml"))
     args = ap.parse_args()
-    cfg = yaml.safe_load(open(ROOT / "config.yaml", encoding="utf-8"))
+    cfg = yaml.safe_load(open(args.config, encoding="utf-8"))
     uvicorn.run(create_app(cfg), host=args.host, port=args.port, log_level="info",
                 timeout_graceful_shutdown=2)  # nie czekaj w nieskonczonosc na otwarte strumienie SSE
 

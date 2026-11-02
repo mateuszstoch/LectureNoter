@@ -273,7 +273,7 @@ function mountDetail(id, tab) {
   const view = $("#view");
   const tabBtn = (key, label) => h("a", { class: "tab", role: "tab", href: `#/video/${id}${key === "process" ? "" : "/" + key}`, "aria-selected": String(tab === key) }, label);
   const tabs = h("div", { class: "tabs", role: "tablist" }, tabBtn("process", "Przetwarzanie"), tabBtn("notes", "Notatki"),
-    tabBtn("materials", "Materiały"), h("span", { class: "tab disabled", title: "Dostępne w kolejnej fazie" }, "Czat"));
+    tabBtn("materials", "Materiały"), tabBtn("chat", "Czat"));
   const content = h("div", { id: "dtab" });
   view.replaceChildren(h("div", { id: "dhead" }), tabs, content);
   if (tab === "process") {
@@ -285,6 +285,8 @@ function mountDetail(id, tab) {
     mountNotesTab(content, id);
   } else if (tab === "materials") {
     mountMaterialsTab(content, id);
+  } else if (tab === "chat") {
+    mountChatTab(content, id);
   }
   updateDetail();
 }
@@ -381,7 +383,7 @@ function updateDetail() {
 
 // ---------- routing i dane ----------
 function route() {
-  const m = location.hash.match(/^#\/video\/([a-z0-9_-]+)(?:\/(notes|materials))?/);
+  const m = location.hash.match(/^#\/video\/([a-z0-9_-]+)(?:\/(notes|materials|chat))?/);
   if (m) {
     const tab = m[2] || "process";
     if (detailId !== m[1] || detailTab !== tab || !$("#dhead")) {

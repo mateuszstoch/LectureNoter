@@ -385,3 +385,344 @@ def test_regeneration_keeps_edited_notes(notes_env, env):
     (wd / "lecture_notes.md").write_text("g", encoding="utf-8")
     imp = c.get("/api/videos/ok/impact", params={"stage": "llm"}).json()
     assert imp["keeps_edited_notes"] is True
+
+
+# ---------- czat ----------
+import copy  # noqa: E402
+import threading  # noqa: E402
+
+from ollama_client import OllamaError  # noqa: E402
+from ui import retrieval as rt  # noqa: E402
+from ui.chat import ChatService, ChatStore  # noqa: E402
+
+NOTES = """# Notatki
+## Maszyna Turinga
+Maszyna Turinga ma nieskończoną taśmę, głowicę i stany. Funkcja przejścia delta opisuje kroki.
+## Problemy decyzyjne
+Problem decyzyjny to pytanie tak lub nie o egzemplarz problemu, np. czy graf jest spójny.
+## Organizacja
+Zaliczenie od 6 punktów, dwa kolokwia, plusy za aktywność.
+"""
+
+
+class FakeOllama:
+    def __init__(self, tokens=("Odpo", "wiedź ", "testowa."), installed=("qwen2.5:7b-instruct",)):
+        self.tokens, self.installed = list(tokens), list(installed)
+        self.calls, self.unloaded, self.generated, self.loaded = [], [], [], []
+        self.fail_after = None
+        self.on_token = None
+
+    def installed_models(self): return self.installed
+    def loaded_models(self): return list(self.loaded)
+    def unload(self, m): self.unloaded.append(m)
+
+    def generate(self, model, prompt, **kw):
+        self.generated.append(prompt)
+        return "Streszczenie rozmowy."
+
+    def chat_stream(self, model, messages, options=None, keep_alive=None, cancel=None):
+        self.calls.append({"model": model, "messages": messages, "options": options})
+        for i, t in enumerate(self.tokens):
+            if self.fail_after is not None and i >= self.fail_after:
+                raise OllamaError("zerwane polaczenie")
+            if self.on_token:
+                self.on_token(i)
+            yield t
+
+
+@pytest.fixture
+def chat_env(env, tmp_path):
+    lib, gpu, jm, videos, work = env
+    lib.add_video("ok.mp4")
+    wd = lib.workdir("ok")
+    (wd / "lecture_notes.md").write_text(NOTES, encoding="utf-8")
+    (wd / "transcript.json").write_text(json.dumps([
+        {"start": 10, "end": 20, "text": "Dzisiaj zaczniemy od maszyny Turinga."},
+        {"start": 900, "end": 915, "text": "Problem faktoryzacji jest w NP."}]), encoding="utf-8")
+    fake = FakeOllama()
+    svc = ChatService(lib, gpu, CFG, fake)
+    return svc, fake, ChatStore(wd), wd, gpu, jm
+
+
+def run_stream(svc, cid, q, **kw):
+    return list(svc.stream_answer("ok", cid, q, **kw))
+
+
+# --- retrieval ---
+def test_split_notes_and_polish_stemming():
+    secs = rt.split_notes(NOTES)
+    assert [s["title"] for s in secs] == ["Notatki", "Maszyna Turinga", "Problemy decyzyjne", "Organizacja"]
+    bm = rt.BM25([rt.tokens(s["title"] + " " + s["text"]) for s in secs])
+    sc = bm.scores(rt.tokens("Jak działa maszynie Turinga?"))  # inna forma fleksyjna niz w notatkach
+    assert max(range(len(sc)), key=sc.__getitem__) == 1
+
+
+def test_context_full_notes_when_small_and_chunks_when_large():
+    ctx, src = rt.build_context("co to jest maszyna?", [], NOTES, [], [], 4000)
+    assert "Maszyna Turinga ma nieskończoną" in ctx and src[0]["label"] == "Notatki (całość)"
+    big = NOTES + "\n".join(f"## Sekcja {i}\n" + "słowo " * 300 for i in range(40)) + "\n## Zaliczenie punkty\nkolokwium 6 punktów"
+    ctx, src = rt.build_context("ile punktów na kolokwium?", [], big, [], [], 1500)
+    assert rt.est_tokens(ctx) <= 1500 + 150
+    assert any(s["label"] == "Zaliczenie punkty" for s in src)
+    assert "[Spis treści notatek]" in ctx
+
+
+def test_context_timestamp_question_pulls_nearest_window():
+    tr = [{"start": i * 100, "end": i * 100 + 10, "text": f"fragment numer {i}"} for i in range(20)]
+    ctx, src = rt.build_context("co było w 15:00?", [], "", tr, [], 2000)
+    assert any(s["kind"] == "transcript" and abs(s["t"] - 900) <= 100 for s in src)
+
+
+# --- store ---
+def test_chat_store_crud(tmp_path):
+    st = ChatStore(tmp_path)
+    c = st.create()
+    assert st.list()[0]["id"] == c["id"] and st.get(c["id"])["title"] == "Nowa rozmowa"
+    st.update(c["id"], lambda x: x["messages"].append({"role": "user", "content": "x"}))
+    assert ChatStore(tmp_path).get(c["id"])["messages"][0]["content"] == "x"
+    st.delete(c["id"])
+    assert st.list() == []
+
+
+# --- ChatService ---
+def test_stream_events_persist_and_context(chat_env):
+    svc, fake, store, wd, gpu, jm = chat_env
+    c = store.create()
+    ev = run_stream(svc, c["id"], "Jak działa maszyna Turinga?")
+    assert [e for e, _ in ev][0] == "sources" and ev[-1][0] == "done"
+    assert "".join(d for e, d in ev if e == "token") == "Odpowiedź testowa."
+    msgs = store.get(c["id"])["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant"] and msgs[1]["content"] == "Odpowiedź testowa."
+    assert store.get(c["id"])["title"].startswith("Jak działa maszyna")
+    system = fake.calls[0]["messages"][0]["content"]
+    assert "nieskończoną taśmę" in system and "[Mowa" in system and fake.calls[0]["messages"][-1]["content"] == "Jak działa maszyna Turinga?"
+    assert svc.status()["held"] and gpu.holder()["owner"] == "chat" and not svc.status()["generating"]
+    svc.release()
+
+
+def test_second_turn_includes_history(chat_env):
+    svc, fake, store, *_ = chat_env
+    c = store.create()
+    run_stream(svc, c["id"], "Pierwsze pytanie o maszynę")
+    run_stream(svc, c["id"], "A co z drugim?")
+    roles = [m["role"] for m in fake.calls[1]["messages"]]
+    assert roles == ["system", "user", "assistant", "user"]
+    svc.release()
+
+
+def test_history_folded_into_summary(chat_env):
+    svc, fake, store, wd, *_ = chat_env
+    svc.cfg = copy.deepcopy(CFG)
+    svc.cfg["profiles"]["8gb"]["num_ctx"] = 1500
+    svc.ccfg = {"num_predict": 100, "history_ratio": 0.25}
+    c = store.create()
+    long = "Treść wiadomości. " * 60
+    for i in range(3):
+        store.update(c["id"], lambda x: x["messages"].extend([{"role": "user", "content": long}, {"role": "assistant", "content": long}]))
+    run_stream(svc, c["id"], "Nowe pytanie")
+    chat = store.get(c["id"])
+    assert fake.generated and chat["summary"] == "Streszczenie rozmowy." and chat["summarized_upto"] >= 2
+    assert "Streszczenie wcześniejszej rozmowy" in fake.calls[0]["messages"][0]["content"]
+    raw = [m for m in fake.calls[0]["messages"][1:-1]]
+    assert len(raw) <= 4
+    svc.release()
+
+
+def test_busy_gpu_blocks_and_does_not_persist(chat_env):
+    svc, fake, store, wd, gpu, jm = chat_env
+    other = GpuLock(gpu.path)
+    assert other.acquire("pipeline")
+    c = store.create()
+    ev = run_stream(svc, c["id"], "pytanie")
+    assert ev == [("error", "GPU jest zajęte przez: pipeline. Czat będzie dostępny po jego zakończeniu.")]
+    assert store.get(c["id"])["messages"] == [] and fake.calls == []
+    other.release()
+
+
+def test_model_not_installed(chat_env):
+    svc, fake, store, *_ = chat_env
+    c = store.create()
+    ev = run_stream(svc, c["id"], "q", model="qwen2.5:14b-instruct")
+    assert ev[0][0] == "error" and "ollama pull qwen2.5:14b-instruct" in ev[0][1]
+    assert not svc.status()["held"]
+
+
+def test_empty_and_missing_materials(chat_env):
+    svc, fake, store, wd, *_ = chat_env
+    c = store.create()
+    assert run_stream(svc, c["id"], "   ")[0][0] == "error"
+    (wd / "lecture_notes.md").unlink()
+    (wd / "transcript.json").unlink()
+    assert "Brak notatek i transkryptu" in run_stream(svc, c["id"], "pytanie")[0][1]
+
+
+def test_closed_generator_keeps_partial(chat_env):
+    svc, fake, store, *_ = chat_env
+    c = store.create()
+    it = svc.stream_answer("ok", c["id"], "pytanie")
+    assert next(it)[0] == "sources" and next(it) == ("token", "Odpo")
+    it.close()
+    msgs = store.get(c["id"])["messages"]
+    assert msgs[-1]["content"] == "Odpo" and msgs[-1]["stopped"] is True
+    assert not svc.status()["generating"]
+    svc.release()
+
+
+def test_cancel_event_stops_stream(chat_env):
+    svc, fake, store, *_ = chat_env
+    c = store.create()
+    cancel = threading.Event()
+    fake.on_token = lambda i: cancel.set() if i == 1 else None
+    ev = run_stream(svc, c["id"], "pytanie", cancel=cancel)
+    assert [e for e, _ in ev][-1] == "token" and store.get(c["id"])["messages"][-1]["stopped"] is True
+    svc.release()
+
+
+def test_stream_failure_modes(chat_env):
+    svc, fake, store, *_ = chat_env
+    c = store.create()
+    fake.fail_after = 1
+    ev = run_stream(svc, c["id"], "pytanie")
+    assert ev[-1] == ("error", "zerwane polaczenie")
+    msgs = store.get(c["id"])["messages"]
+    assert msgs[-1]["content"] == "Odpo" and msgs[-1]["stopped"]
+    c2 = store.create()
+    fake.fail_after = 0
+    run_stream(svc, c2["id"], "pytanie")
+    assert store.get(c2["id"])["messages"] == []  # pytanie bez odpowiedzi nie zostaje w historii
+    svc.release()
+
+
+def test_preempt_releases_only_when_idle(chat_env):
+    svc, fake, store, wd, gpu, jm = chat_env
+    c = store.create()
+    seen = {}
+
+    def during(i):
+        if i == 1:
+            seen["released_while_generating"] = svc.release()
+            seen["held"] = svc.status()["held"]
+    fake.on_token = during
+    run_stream(svc, c["id"], "pytanie")
+    assert seen == {"released_while_generating": False, "held": True}
+    svc.preempt()  # po odpowiedzi: zwalnia
+    assert not svc.status()["held"] and gpu.holder() is None and "qwen2.5:7b-instruct" in fake.unloaded
+
+
+def test_job_preempts_idle_chat(chat_env):
+    svc, fake, store, wd, gpu, jm = chat_env
+    jm.lib.add_video("other.mp4")
+    c = store.create()
+    run_stream(svc, c["id"], "pytanie")
+    assert gpu.holder()["owner"] == "chat"
+    jm.set_preempt(svc.preempt)
+    j = jm.enqueue("other")
+    wait_for(jm, j["id"], "done")
+    assert not svc.status()["held"]
+
+
+# --- API ---
+def parse_sse(text):
+    out = []
+    for block in text.strip().split("\n\n"):
+        ev, data = block.split("\n", 1)
+        out.append((ev[7:], json.loads(data[6:])))
+    return out
+
+
+@pytest.fixture
+def chat_client(env):
+    lib, gpu, jm, videos, work = env
+    lib.add_video("ok.mp4")
+    wd = lib.workdir("ok")
+    (wd / "lecture_notes.md").write_text(NOTES, encoding="utf-8")
+    fake = FakeOllama()
+    app = create_app(CFG, videos, work, jobs=jm, start_jobs=False, extra_hosts=("testserver",), ollama=fake)
+    return TestClient(app), fake, app
+
+
+def test_chat_api_flow(chat_client):
+    c, fake, app = chat_client
+    cid = c.post("/api/videos/ok/chats", json={}).json()["id"]
+    r = c.post(f"/api/videos/ok/chats/{cid}/messages", json={"content": "Co to maszyna Turinga?"})
+    ev = parse_sse(r.text)
+    assert ev[0][0] == "sources" and ev[-1][0] == "done" and "".join(d for e, d in ev if e == "token") == "Odpowiedź testowa."
+    chat = c.get(f"/api/videos/ok/chats/{cid}").json()
+    assert len(chat["messages"]) == 2 and chat["messages"][1]["sources"]
+    assert c.get("/api/videos/ok/chats").json()[0]["count"] == 2
+    st = c.get("/api/chat/status").json()
+    assert st["held"] and st["model"] == "qwen2.5:7b-instruct" and st["holder"]["owner"] == "chat"
+    assert c.post("/api/chat/release").json()["held"] is False
+    assert c.delete(f"/api/videos/ok/chats/{cid}").json() == {"ok": True}
+    assert c.get(f"/api/videos/ok/chats/{cid}").status_code == 404
+
+
+def test_chat_api_errors(chat_client):
+    c, fake, app = chat_client
+    assert c.post("/api/videos/ok/chats/brak/messages", json={"content": "x"}).status_code == 404
+    assert c.post("/api/videos/nie-ma/chats", json={}).status_code == 400
+    cid = c.post("/api/videos/ok/chats", json={}).json()["id"]
+    ev = parse_sse(c.post(f"/api/videos/ok/chats/{cid}/messages", json={"content": "q", "model": "x:1"}).text)
+    assert ev[0][0] == "error" and "ollama pull x:1" in ev[0][1]
+
+
+def test_chat_stream_cancel_interrupts_wait_for_headers():
+    """Prawdziwy OllamaClient: serwer nie wysyla nic (ladowanie modelu), a cancel konczy generator szybko."""
+    import http.server
+    import socketserver
+    from ollama_client import OllamaClient
+
+    release = threading.Event()
+
+    class Slow(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            release.wait(10)  # nawet naglowki nie sa wyslane: jak Ollama podczas prefillu duzego promptu
+
+        def log_message(self, *a):
+            pass
+
+    srv = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Slow)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        cancel = threading.Event()
+        client = OllamaClient(host=f"http://127.0.0.1:{srv.server_address[1]}", timeout=30)
+        it = client.chat_stream("m", [{"role": "user", "content": "x"}], cancel=cancel)
+        threading.Timer(0.5, cancel.set).start()
+        t0 = time.time()
+        assert list(it) == []
+        assert time.time() - t0 < 3
+    finally:
+        release.set()
+        srv.shutdown()
+
+
+def test_chat_stream_parses_tokens_and_errors():
+    import http.server
+    import socketserver
+    from ollama_client import OllamaClient
+
+    class Tok(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)
+            self.end_headers()
+            body = self.server.body
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Tok)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    client = OllamaClient(host=f"http://127.0.0.1:{srv.server_address[1]}", timeout=10)
+    try:
+        srv.body = b'{"message":{"content":"Ala "}}\n{"message":{"content":"ma kota"},"done":true,"done_reason":"stop"}\n'
+        assert "".join(client.chat_stream("m", [])) == "Ala ma kota"
+        srv.body = b'{"message":{"content":"x"}}\n{"error":"model zepsuty"}\n'
+        with pytest.raises(OllamaError, match="model zepsuty"):
+            list(client.chat_stream("m", []))
+    finally:
+        srv.shutdown()

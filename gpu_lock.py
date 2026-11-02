@@ -2,6 +2,7 @@
 import fcntl
 import json
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -13,12 +14,17 @@ class GpuLock:
         self.path = Path(path)
         self.info_path = Path(f"{path}.json")
         self._fd = None
+        self._mu = threading.RLock()
 
     def _open(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         return os.open(self.path, os.O_CREAT | os.O_RDWR, 0o644)
 
     def acquire(self, owner, blocking=False):
+        with self._mu:
+            return self._acquire(owner, blocking)
+
+    def _acquire(self, owner, blocking):
         if self._fd is not None:
             return True
         fd = self._open()
@@ -32,6 +38,10 @@ class GpuLock:
         return True
 
     def release(self):
+        with self._mu:
+            self._release()
+
+    def _release(self):
         if self._fd is None:
             return
         try:
@@ -44,6 +54,10 @@ class GpuLock:
 
     def holder(self):
         """None, gdy GPU wolne; inaczej {'owner','pid','since'}."""
+        with self._mu:
+            return self._holder()
+
+    def _holder(self):
         if self._fd is not None:
             return read_json(self.info_path, {"owner": "unknown"})
         fd = self._open()

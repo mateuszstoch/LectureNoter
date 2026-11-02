@@ -129,3 +129,27 @@ pre.vlm { white-space: pre-wrap; background: var(--surface-2); padding: 8px 10px
   .notes-body { border: 0; padding: 0; background: #fff; color: #000; }
   .notes-body h2 { break-after: avoid; } a.ts { background: none; color: #000; }
 }
+
+.chat-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 760px) { .chat-layout { grid-template-columns: 1fr; } }
+.chat-side { display: flex; flex-direction: column; gap: 10px; }
+.chat-list { display: flex; flex-direction: column; gap: 4px; max-height: 60vh; overflow: auto; }
+.chat-item { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 8px; border: 1px solid transparent; }
+.chat-item a { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.chat-item a:hover { text-decoration: none; }
+.chat-item.active { background: var(--surface-2); border-color: var(--border); }
+.chat-main { min-width: 0; }
+.chat-msgs { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; height: 56vh; min-height: 280px; overflow: auto; display: flex; flex-direction: column; gap: 14px; }
+.msg { display: flex; flex-direction: column; gap: 4px; max-width: 92%; }
+.msg.user { align-self: flex-end; align-items: flex-end; }
+.msg.assistant { align-self: flex-start; }
+.bubble { padding: 9px 13px; border-radius: 14px; overflow-wrap: anywhere; }
+.msg.user .bubble { background: var(--accent); color: var(--accent-text); white-space: pre-wrap; }
+.msg.assistant .bubble { background: var(--surface-2); border: 0; padding: 9px 14px; line-height: 1.55; }
+.bubble.notes-body > :first-child { margin-top: 0; } .bubble.notes-body > :last-child { margin-bottom: 0; }
+.bubble.notes-body h1, .bubble.notes-body h2, .bubble.notes-body h3 { font-size: 15px; border: 0; margin: 10px 0 4px; padding: 0; }
+.chat-form { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.chat-input { width: 100%; resize: vertical; font: inherit; padding: 10px 12px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+.chat-input:disabled { opacity: .6; }
+.sources summary { cursor: pointer; }
+@media print { .chat-layout { display: none !important; } }
