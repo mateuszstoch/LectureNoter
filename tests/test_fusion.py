@@ -84,3 +84,47 @@ def test_vlm_resume_and_unload(tmp_path):
     c2 = FakeClient()
     vlm_module.run_vlm(tmp_path, cfg, client=c2)
     assert c2.calls == [] and c2.unloaded == []
+
+
+def test_strip_fences_wrapper_and_stray():
+    md = "```markdown\n## A\n- x\n```\n\n### B\n- y\n```\n\n```markdown\n## C\n```"
+    out = ls.strip_fences(md)
+    assert "```" not in out and "## A" in out and "## C" in out
+
+
+def test_strip_fences_keeps_labeled_code():
+    md = "```markdown\n## A\n```python\nprint(1)\n```\n```"
+    out = ls.strip_fences(md)
+    assert out.count("```") == 2 and "```python" in out
+
+
+def test_clean_chunk_removes_meta_and_normalizes_latex():
+    md = ("## A\ntekst \\( x^2 \\) i \\[ y \\]\n\n## Fragment 8 z 10 wykładu\n**[01:01:50]** - [01:11:28]\n"
+          "Ten fragment notatek zawiera definicje.\n**Uwagi:**\n- coś\n- coś2\n\n## B\n- ok")
+    out = ls.clean_chunk_md(md)
+    assert "$x^2$" in out and "$$ y $$" in out
+    assert "Fragment 8" not in out and "Uwagi" not in out and "coś" not in out and "## B" in out
+
+
+def test_cjk_retry_and_drop(tmp_path):
+    (tmp_path / "transcript.json").write_text(json.dumps([{"start": 0, "end": 5, "text": "tresc"}]), encoding="utf-8")
+
+    class C(FakeClient):
+        def generate(self, model, prompt, **kw):
+            self.calls.append(prompt)
+            if kw.get("system") == ls.SUMMARY_SYSTEM:
+                return "Ok."
+            return "## T\n- po polsku\n- 这是中文"
+
+    c = C()
+    out = ls.run_synthesis(tmp_path, CFG_LLM, "m", 4096, client=c).read_text(encoding="utf-8")
+    assert "中文" not in out and "po polsku" in out
+
+
+def test_second_chunk_gets_covered_topics(tmp_path):
+    (tmp_path / "transcript.json").write_text(json.dumps(
+        [{"start": i * 700, "end": i * 700 + 5, "text": "tresc"} for i in range(3)]), encoding="utf-8")
+    c = FakeClient()
+    ls.run_synthesis(tmp_path, CFG_LLM, "m", 4096, client=c)
+    prompts = [call[1] for call in c.calls]
+    assert "Tematy już opisane" not in prompts[0] and "Sekcja" in prompts[1]

@@ -13,6 +13,7 @@ PROMPT = ("Extract all text, mathematical formulas, and code from this slide. "
           "Describe any charts or diagrams concisely. The content is a handwritten or typed whiteboard/slide "
           "in Polish: transcribe it faithfully in Polish, keep the structure (lists, indentation), write formulas "
           "in LaTeX. Do not invent anything; if a fragment is illegible write [nieczytelne]. "
+          "Ignore application UI (toolbars, mode labels such as 'Tryb precyzyjny', participant names, player controls). "
           "If the page is blank, say so briefly.")
 MAX_SIDE = 1344
 

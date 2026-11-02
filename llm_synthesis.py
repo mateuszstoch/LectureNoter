@@ -17,10 +17,21 @@ SYSTEM = (
     "i wyciągaj sens; przy nazwach własnych, symbolach i wzorach ufaj bardziej tablicy niż mowie. "
     "Opisy tablicy bywają niedokładne (pismo odręczne): nie zgaduj, oznacz wątpliwe miejsca jako [?]. "
     "Nie dodawaj faktów spoza materiału. Dodawaj znaczniki czasu [HH:MM:SS] przy kluczowych tematach. "
-    "Tablica opisuje stan końcowy planszy, więc jej treść mogła być zapisywana wcześniej niż jest pokazana."
+    "Tablica opisuje stan końcowy planszy, więc jej treść mogła być zapisywana wcześniej niż jest pokazana. "
+    "Elementy interfejsu programu (np. napis 'Tryb precyzyjny', paski narzędzi, nazwiska uczestników spotkania) "
+    "to nie treść wykładu: pomijaj je. "
+    "FORMAT ODPOWIEDZI: zwróć czysty Markdown, bez otaczania go blokiem ``` i bez słowa 'markdown'. "
+    "Bloków ``` używaj wyłącznie dla prawdziwego kodu programu. Wzory zapisuj jako $...$ (w tekście) "
+    "i $$...$$ (osobna linia), nie używaj \\( \\) ani \\[ \\]. "
+    "Pisz wyłącznie po polsku (nazwy i terminy angielskie dopuszczalne), bez znaków chińskich. "
+    "Nie dodawaj komentarzy o samej notatce (żadnych 'Uwagi', 'Ten fragment zawiera...'), "
+    "nie numeruj fragmentów i nie pisz nagłówków typu 'Fragment 3'. "
+    "Każdy temat opisuj tylko raz: jeśli został już opisany wcześniej (lista tematów poniżej), pomiń go "
+    "lub dodaj wyłącznie nowe informacje."
 )
 SUMMARY_SYSTEM = ("Na podstawie listy nagłówków notatek z wykładu napisz po polsku krótkie (5-8 zdań) "
-                  "podsumowanie tematyki wykładu. Nie dodawaj informacji spoza nagłówków.")
+                  "podsumowanie tematyki wykładu. Nie dodawaj informacji spoza nagłówków. "
+                  "Pomiń nagłówki dotyczące interfejsu programu (np. 'Tryb precyzyjny'). Bez znaków chińskich.")
 
 
 def est_tokens(text):
@@ -83,6 +94,66 @@ def chunk_timeline(items, token_budget, max_minutes):
     return chunks
 
 
+CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
+LABELED_FENCE = re.compile(r"^```\s*(?!markdown\b|md\b)[A-Za-z0-9_+-]+\s*$", re.I)
+
+
+def strip_fences(md):
+    """Usuwa opakowania ```markdown i zbłąkane ```; zachowuje bloki z jawnie podanym językiem (kod)."""
+    out, inner = [], False
+    for line in md.splitlines():
+        t = line.strip()
+        if t.startswith("```"):
+            if inner and t == "```":
+                inner = False
+                out.append(line)
+            elif not inner and LABELED_FENCE.match(t):
+                inner = True
+                out.append(line)
+            elif not inner:
+                continue  # ```markdown, ```md, bezjezykowe lub zbłąkane
+            else:
+                out.append(line)
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def normalize_latex(md):
+    md = re.sub(r"\\\[(.+?)\\\]", lambda m: f"$$ {m.group(1).strip()} $$", md, flags=re.S)
+    md = re.sub(r"\\\((.+?)\\\)", lambda m: f"${m.group(1).strip()}$", md, flags=re.S)
+    return md
+
+
+META_LINE = re.compile(r"^\s*(\*\*)?(ten fragment (notatek )?(zawiera|przedstawia)|uwagi?:?|notatki z wyk[łl]adu \d+)\b", re.I)
+FRAGMENT_HEAD = re.compile(r"^#+\s*fragment\s+\d+(\s+z\s+\d+)?.*$", re.I)
+TS_RANGE = re.compile(r"^\s*\*\*\[\d\d:\d\d:\d\d\]\*\*\s*-\s*\[\d\d:\d\d:\d\d\]\s*$")
+
+
+def clean_chunk_md(md):
+    md = normalize_latex(strip_fences(md))
+    out, skip_list = [], False
+    for line in md.splitlines():
+        if FRAGMENT_HEAD.match(line) or TS_RANGE.match(line):
+            continue
+        if META_LINE.match(line):
+            skip_list = True  # pomija tez ewentualna liste punktowa tuz pod komentarzem
+            continue
+        if skip_list and (line.strip() == "" or re.match(r"^\s*[-*]\s", line)):
+            continue
+        skip_list = False
+        out.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+
+
+def drop_cjk_lines(md):
+    return "\n".join(l for l in md.splitlines() if not CJK.search(l))
+
+
+def headings(md, levels=("## ", "### ")):
+    return [l.lstrip("#").strip() for l in md.splitlines() if l.startswith(levels)]
+
+
 def shift_headings(md, min_level=2):
     """Gwarantuje, ze notatka z chunku nie zawiera H1 (tytul dodaje skladanie)."""
     return re.sub(r"^#(?!#)", "##", md, flags=re.M) if min_level == 2 else md
@@ -112,32 +183,41 @@ def run_synthesis(workdir, cfg, model, num_ctx, client=None):
         for i, ch in enumerate(chunks, 1):
             path = cdir / f"chunk_{i:02d}.md"
             if path.exists():
-                notes.append(path.read_text(encoding="utf-8"))
+                notes.append(clean_chunk_md(path.read_text(encoding="utf-8")))
                 continue
             logger.info(f"LLM fragment {i}/{len(chunks)} [{fmt_ts(ch[0]['t'])}-{fmt_ts(ch[-1]['t'])}]")
-            prompt = (f"To jest fragment {i} z {len(chunks)} wykładu. Nie pisz wstępu ani podsumowania całości, "
-                      f"tylko notatki z tego fragmentu.\n\n" + "\n".join(render(x) for x in ch))
-            md = client.generate(model, prompt, system=SYSTEM,
-                                 options={"num_ctx": num_ctx, "num_predict": cfg["num_predict"],
-                                          "temperature": cfg["temperature"]},
-                                 keep_alive="10m").strip()
+            covered = [h for n in notes for h in headings(n, ("## ",))]
+            covered_txt = ("Tematy już opisane we wcześniejszych notatkach (nie powtarzaj ich): "
+                           + "; ".join(dict.fromkeys(covered)) + "\n\n") if covered else ""
+            prompt = (f"{covered_txt}Poniżej materiał z kolejnego odcinka wykładu. "
+                      f"Napisz notatki tylko z tego materiału, bez wstępu i bez podsumowania całości.\n\n"
+                      + "\n".join(render(x) for x in ch))
+            opts = {"num_ctx": num_ctx, "num_predict": cfg["num_predict"], "temperature": cfg["temperature"]}
+            md = clean_chunk_md(client.generate(model, prompt, system=SYSTEM, options=opts, keep_alive="10m"))
+            if CJK.search(md):
+                logger.warning(f"fragment {i}: znaki CJK w odpowiedzi, ponawiam")
+                opts["temperature"] = 0.0
+                md = clean_chunk_md(client.generate(model, prompt, system=SYSTEM, options=opts, keep_alive="10m"))
+                md = drop_cjk_lines(md)
             md = shift_headings(md)
             tmp = path.with_suffix(".tmp")
             tmp.write_text(md, encoding="utf-8")
             tmp.replace(path)
             notes.append(md)
-        heads = "\n".join(l for n in notes for l in n.splitlines() if l.startswith("## "))
+        heads = "\n".join("## " + h for h in dict.fromkeys(h for n in notes for h in headings(n, ("## ",))))
         summary = ""
         if heads:
             summary = client.generate(model, heads, system=SUMMARY_SYSTEM,
                                       options={"num_ctx": num_ctx, "num_predict": 500, "temperature": 0.2},
                                       keep_alive="10m").strip()
+            if CJK.search(summary):
+                summary = drop_cjk_lines(summary)
     finally:
         try:
             client.unload(model)
         except Exception as e:
             logger.error(f"nie udalo sie rozladowac {model}: {e}")
-    toc = "\n".join(f"- {l[3:]}" for l in heads.splitlines())
+    toc = "\n".join(f"- {h}" for h in dict.fromkeys(headings("\n".join(notes), ("## ",))))
     doc = ["# Notatki z wykładu", "", "## Podsumowanie", "", summary, "", "## Spis treści", "", toc, "", "---", ""]
     for n in notes:
         doc += [n, ""]
