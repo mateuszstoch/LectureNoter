@@ -1,11 +1,13 @@
 @echo off
 setlocal EnableExtensions
-rem LectureNoter: uruchamia serwer w WSL (jesli nie dziala) i otwiera aplikacje w osobnym oknie.
+rem LectureNoter: uruchamia serwer w WSL W TLE (bez okna terminala) i otwiera aplikacje w osobnym oknie.
+rem Serwer wylacza sie sam po zamknieciu okna aplikacji (gdy nic nie jest przetwarzane); mozna tez uzyc przycisku "Zakoncz".
 rem Folder projektu jest wyznaczany z polozenia tego pliku (..\ wzgledem folderu scripts) i zamieniany na sciezke WSL,
 rem wiec projekt moze lezec na dysku Windows (np. C:\Users\...\LectureNoter -> /mnt/c/Users/.../LectureNoter).
 rem Zmienne opcjonalne:
 rem   LECTURENOTER_DIR     sciezka projektu W WSL (nadpisuje automatyczne wykrywanie), np. /home/jan/LectureNoter
 rem   LECTURENOTER_DISTRO  nazwa dystrybucji WSL, np. Ubuntu (gdy domyslna to np. docker-desktop)
+rem Log startu serwera: work\launch.log w katalogu projektu.
 rem Plik jest celowo bez polskich znakow (kodowanie konsoli Windows).
 
 set "URL=http://localhost:8000"
@@ -31,9 +33,8 @@ if not defined PROJECT_WSL goto nopath
 
 echo Projekt (Windows): %PROJECT_WIN%
 echo Projekt (WSL):     %PROJECT_WSL%
-echo Uruchamiam serwer w WSL. Okno "LectureNoter server" pokaze postep i ewentualne bledy.
-echo Pierwsze uruchomienie instaluje zaleznosci i moze potrwac kilka minut. Nie zamykaj tego okna.
-start "LectureNoter server" wsl.exe %DISTRO_ARG% bash -lc "cd '%PROJECT_WSL%' && python3 scripts/launch.py; echo; echo Serwer zakonczyl prace. Nacisnij Enter, aby zamknac okno.; read"
+echo Uruchamiam serwer w tle (bez okna terminala). Pierwsze uruchomienie instaluje zaleznosci i moze potrwac kilka minut.
+wscript.exe //nologo "%~dp0hidden.vbs" wsl.exe %DISTRO_ARG% bash -lc "cd '%PROJECT_WSL%' && mkdir -p work && python3 scripts/launch.py --auto-exit > work/launch.log 2>&1"
 
 set /a tries=0
 :wait
@@ -41,7 +42,15 @@ set /a tries+=1
 if %tries% gtr 900 goto fail
 timeout /t 1 /nobreak >nul
 curl.exe -s -o nul "%URL%/api/health"
-if errorlevel 1 goto wait
+if not errorlevel 1 goto open
+set /a m=tries %% 5
+if not %m%==0 goto wait
+set "LOGFAIL="
+wsl.exe %DISTRO_ARG% bash -lc "tail -n 1 '%PROJECT_WSL%/work/launch.log' 2>/dev/null | cut -c1-110"
+wsl.exe %DISTRO_ARG% bash -lc "grep -qE 'BLAD:|Traceback' '%PROJECT_WSL%/work/launch.log' 2>/dev/null"
+if not errorlevel 1 set "LOGFAIL=1"
+if defined LOGFAIL goto fail
+goto wait
 
 :open
 rem Edge/Chrome nie sa w PATH, wiec szukamy ich standardowych lokalizacji (bez blokow w nawiasach: w sciezkach sa nawiasy)
@@ -79,6 +88,11 @@ exit /b 1
 
 :fail
 echo.
-echo Serwer nie odpowiada po 15 minutach. Sprawdz komunikat w oknie "LectureNoter server".
+echo Serwer nie wystartowal. Ostatnie linie logu (work\launch.log):
+echo ------------------------------------------------------------
+wsl.exe %DISTRO_ARG% bash -lc "tail -n 25 '%PROJECT_WSL%/work/launch.log' 2>/dev/null"
+echo ------------------------------------------------------------
+echo Najczestsze przyczyny: brak Pythona 3.10+ (patrz README), brak ffmpeg, zly katalog projektu (LECTURENOTER_DIR),
+echo inna domyslna dystrybucja WSL (LECTURENOTER_DISTRO).
 pause
 exit /b 1

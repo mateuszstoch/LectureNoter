@@ -862,3 +862,47 @@ def test_delete_forgets_finished_jobs_and_rejects_bad_ids(client, env):
     for bad in ("nie-ma", "..%2F..%2Fetc", "A B"):
         assert c.delete(f"/api/videos/{bad}").status_code in (400, 404, 405)
     assert work.exists() and (videos / "other.mp4").exists()  # nic poza wykladem nie ucierpialo
+
+
+# ---------- wylaczanie serwera i licznik klientow ----------
+def test_stream_tracks_connected_window(client):
+    c, jm = client
+    tr = c.app.state.tracker
+    assert tr.count == 0 and tr.ever_connected is False
+    c.get("/api/stream", params={"once": "true"})  # okno polaczylo sie i rozlaczylo
+    assert tr.count == 0 and tr.ever_connected is True
+
+
+def test_shutdown_requires_header_and_refuses_when_busy(client, env):
+    c, jm = client
+    lib, _, _, videos, work = env
+    called = []
+    c.app.state.request_exit = lambda: called.append(1)
+    assert c.post("/api/shutdown").status_code == 403           # bez naglowka (np. obca strona w przegladarce)
+    assert c.post("/api/shutdown", headers={"x-lecturenoter": "0"}).status_code == 403
+    lib.add_video("ok.mp4")
+    jm.enqueue("ok")                                             # oczekujace zadanie = praca
+    r = c.post("/api/shutdown", headers={"x-lecturenoter": "1"})
+    assert r.status_code == 409 and "przetwarzanie" in r.json()["detail"] and not called
+    jm.set_paused(True)                                          # wstrzymana kolejka nie blokuje wylaczenia
+    assert c.post("/api/shutdown", headers={"x-lecturenoter": "1"}).json() == {"ok": True}
+    time.sleep(0.8)
+    assert called == [1]
+
+
+def test_shutdown_force_and_idle(client):
+    c, jm = client
+    called = []
+    c.app.state.request_exit = lambda: called.append(1)
+    assert c.post("/api/shutdown", headers={"x-lecturenoter": "1"}).status_code == 200  # nic nie trwa
+    time.sleep(0.8)
+    assert called == [1]
+    assert c.get("/api/system").json()["auto_exit"] is False
+
+
+def test_busy_detection_includes_chat_generation(client):
+    c, jm = client
+    assert c.app.state.is_busy() is False
+    c.app.state.chat._generating = True
+    assert c.app.state.is_busy() is True
+    c.app.state.chat._generating = False

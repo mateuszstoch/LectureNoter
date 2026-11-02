@@ -71,3 +71,31 @@ def test_missing_python_gives_instructions(tmp_path):
     env = dict(os.environ, LECTURENOTER_VENV=str(tmp_path / "v"), LECTURENOTER_PYTHON="python-ktorego-nie-ma")
     r = subprocess.run([sys.executable, str(proj / "scripts" / "launch.py")], env=env, capture_output=True, text=True, timeout=60)
     assert r.returncode == 1 and "deadsnakes" in r.stderr and "nie powinno" not in r.stdout
+
+
+def test_background_mode_detaches_and_adds_auto_exit(tmp_path):
+    """--background: skrypt wraca od razu, serwer dziala w tle z --auto-exit, a jego wyjscie trafia do work/launch.log."""
+    proj = tmp_path / "projekt"
+    (proj / "scripts").mkdir(parents=True)
+    shutil.copy(ROOT / "scripts" / "launch.py", proj / "scripts" / "launch.py")
+    (proj / "requirements.txt").write_text("\n")
+    (proj / "server.py").write_text(
+        "import sys, time, pathlib\n"
+        "time.sleep(1.0)\n"
+        "pathlib.Path('marker.txt').write_text(' '.join(sys.argv[1:]))\n"
+        "print('SERWER W TLE', ' '.join(sys.argv[1:]), flush=True)\n")
+    env = dict(os.environ, LECTURENOTER_VENV=str(tmp_path / "venv"), LECTURENOTER_PYTHON=sys.executable)
+    import time
+    t0 = time.time()
+    r = subprocess.run([sys.executable, str(proj / "scripts" / "launch.py"), "--background", "--port", "8123"],
+                       env=env, capture_output=True, text=True, timeout=180)
+    assert r.returncode == 0, r.stderr
+    assert "uruchomiony w tle" in r.stdout and "SERWER W TLE" not in r.stdout  # nic z serwera nie leci na terminal
+    marker = proj / "marker.txt"
+    for _ in range(100):  # serwer konczy prace po ~1 s, niezaleznie od launch.py
+        if marker.exists():
+            break
+        time.sleep(0.1)
+    assert marker.read_text() == "--port 8123 --auto-exit"
+    log = (proj / "work" / "launch.log").read_text()
+    assert "SERWER W TLE --port 8123 --auto-exit" in log

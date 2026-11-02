@@ -3,6 +3,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 
 import contextlib
@@ -29,6 +30,7 @@ from ui import materials, notes as notes_mod
 from ui.chat import ChatError, ChatService, ChatStore
 from ui.jobs import JobError, JobManager
 from ui.library import Library, LibraryError
+from ui.lifecycle import AutoExit, ClientTracker, KeepAwake
 from run_state import is_live, read_run_state
 
 ROOT = Path(__file__).resolve().parent
@@ -85,24 +87,42 @@ def tail_lines(path, n=200):
         return [], 0
 
 
-def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, extra_hosts=(), ollama=None):
+def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, extra_hosts=(), ollama=None,
+               auto_exit=False, idle_grace=30.0, startup_grace=180.0):
     videos_dir = Path(videos_dir or ROOT / cfg["paths"]["videos_dir"])
     work_dir = Path(work_dir or ROOT / cfg["paths"]["work_dir"])
     lib = Library(videos_dir, work_dir, cfg)
     gpu = GpuLock(work_dir / ".gpu.lock")
     jm = jobs or JobManager(lib, gpu)
+    tracker = ClientTracker()
+
+    def is_busy():
+        """Praca, ktorej nie wolno przerywac: zadanie w toku, oczekujace (gdy kolejka nie jest wstrzymana) albo odpowiedz czatu."""
+        snap = jm.snapshot()
+        jobs_busy = any(j["status"] == "running" or (j["status"] == "queued" and not snap["paused"]) for j in snap["jobs"])
+        return jobs_busy or chat.status()["generating"]
+
     @contextlib.asynccontextmanager
     async def lifespan(app):
+        loops = []
         if start_jobs:
             jm.start()
+            loops.append(KeepAwake(is_busy).start())  # komputer nie zasypia w trakcie przetwarzania
+            if auto_exit:
+                loops.append(AutoExit(tracker, is_busy, lambda: app.state.request_exit(), idle_grace, startup_grace).start())
         yield
+        for lp in loops:
+            lp.stop()
         jm.stop()
+        chat.release()  # rozladuj model czatu i zwolnij GPU przy zamykaniu serwera
 
     app = FastAPI(title="LectureNoter", lifespan=lifespan)
     ollama = ollama or OllamaClient(timeout=cfg.get("chat", {}).get("timeout_s", 600))
     chat = ChatService(lib, gpu, cfg, ollama)
     jm.set_preempt(chat.preempt)  # zadanie czekajace na GPU zwalnia model czatu (gdy ten nie generuje)
-    app.state.chat = chat
+    app.state.chat, app.state.tracker, app.state.is_busy = chat, tracker, is_busy
+    app.state.auto_exit = auto_exit
+    app.state.request_exit = lambda: None  # main() podstawia zatrzymanie serwera uvicorn
     # ochrona przed DNS rebinding: tylko lokalne nazwy hosta
     app.add_middleware(TrustedHostMiddleware,
                        allowed_hosts=["localhost", "127.0.0.1", "[::1]", *extra_hosts])
@@ -131,6 +151,7 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
             pass
         return {"ollama": ollama, "gpu_holder": gpu.holder(), "profile": pick_profile(cfg),
                 "pandoc": bool(shutil.which("pandoc")),
+                "auto_exit": auto_exit, "busy": is_busy(),
                 "paths": {"videos_dir": str(lib.videos_dir.resolve()), "work_dir": str(lib.work_dir.resolve())},
                 "vram": {"total_gb": total_vram_gb(), "used_gb": vram_used_gb()},
                 "models": {"vlm": cfg["vlm"]["model"],
@@ -370,6 +391,14 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
     @app.get("/api/stream")
     async def stream(request: Request, once: bool = False):
         async def gen():
+            tracker.enter()  # okno aplikacji jest polaczone (serwer z --auto-exit nie wylaczy sie)
+            try:
+                async for chunk in loop():
+                    yield chunk
+            finally:
+                tracker.leave()
+
+        async def loop():
             last, idle = None, 0
             while not await request.is_disconnected():
                 payload = json.dumps(build_state(), sort_keys=True, ensure_ascii=False)
@@ -417,6 +446,18 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
         logger.exception(f"nieobsluzony wyjatek: {request.method} {request.url.path}")
         return JSONResponse({"detail": f"Blad wewnetrzny serwera: {type(exc).__name__}: {exc} (szczegoly w logu serwera)"}, status_code=500)
 
+    @app.post("/api/shutdown")
+    def shutdown(request: Request, force: bool = False):
+        """Wylacza serwer (tryb headless nie ma okna terminala). Wymaga naglowka X-LectureNoter, wiec obca strona
+        w przegladarce nie moze tego wywolac (naglowek wymusza preflight CORS)."""
+        if request.headers.get("x-lecturenoter") != "1":
+            raise HTTPException(403, "brak wymaganego naglowka")
+        if is_busy() and not force:
+            raise HTTPException(409, "Trwa przetwarzanie lub odpowiedz czatu. Anuluj zadania albo poczekaj na koniec.")
+        logger.info("wylaczanie serwera na zadanie uzytkownika")
+        threading.Timer(0.4, lambda: app.state.request_exit()).start()  # po wyslaniu odpowiedzi
+        return {"ok": True}
+
     @app.get("/api/server-log")
     def server_log(lines: int = 300):
         text, _ = tail_lines(work_dir / "server.log", min(max(lines, 1), 2000))
@@ -456,15 +497,23 @@ def main():
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--config", default=str(ROOT / "config.yaml"))
+    ap.add_argument("--auto-exit", action="store_true", default=os.environ.get("LECTURENOTER_AUTO_EXIT") == "1",
+                    help="wylacz serwer po zamknieciu okna aplikacji (gdy nic nie jest przetwarzane)")
+    ap.add_argument("--idle-grace", type=float, default=30.0, help="sekundy bez okna aplikacji przed wylaczeniem")
+    ap.add_argument("--startup-grace", type=float, default=180.0, help="sekundy oczekiwania na pierwsze okno po starcie")
     args = ap.parse_args()
     cfg = yaml.safe_load(open(args.config, encoding="utf-8"))
     work_dir = ROOT / cfg["paths"]["work_dir"]
     work_dir.mkdir(parents=True, exist_ok=True)
     logger.add(work_dir / "server.log", rotation="5 MB", retention=3, encoding="utf-8", enqueue=True)
     logging.basicConfig(handlers=[InterceptHandler()], level=logging.INFO, force=True)
-    logger.info(f"LectureNoter: start serwera na {args.host}:{args.port}")
-    uvicorn.run(create_app(cfg), host=args.host, port=args.port, log_level="info", log_config=None, access_log=False,
-                timeout_graceful_shutdown=2)  # nie czekaj w nieskonczonosc na otwarte strumienie SSE
+    logger.info(f"LectureNoter: start serwera na {args.host}:{args.port}" + (" (auto-exit)" if args.auto_exit else ""))
+    app = create_app(cfg, auto_exit=args.auto_exit, idle_grace=args.idle_grace, startup_grace=args.startup_grace)
+    server = uvicorn.Server(uvicorn.Config(app, host=args.host, port=args.port, log_level="info", log_config=None,
+                                           access_log=False, timeout_graceful_shutdown=2))  # nie czekaj na otwarte strumienie SSE
+    app.state.request_exit = lambda: setattr(server, "should_exit", True)
+    server.run()
+    logger.info("LectureNoter: serwer zakonczyl prace")
 
 
 if __name__ == "__main__":

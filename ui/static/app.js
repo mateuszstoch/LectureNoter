@@ -36,7 +36,7 @@ function h(tag, props, ...kids) {
 }
 
 async function api(path, opts = {}) {
-  const init = { method: opts.method || "GET", headers: {} };
+  const init = { method: opts.method || "GET", headers: { "X-LectureNoter": "1" } };
   if (opts.body !== undefined) {
     init.headers["content-type"] = "application/json";
     init.body = JSON.stringify(opts.body);
@@ -385,6 +385,32 @@ async function openDeleteDialog(v) {
       } }, "Usuń wykład"))));
 }
 
+function openShutdownDialog() {
+  const auto = state.system && state.system.auto_exit;
+  openDialog(h("h2", {}, "Zakończ LectureNoter"),
+    h("p", {}, "Serwer zostanie wyłączony, a model czatu zwolniony z pamięci GPU. Dane i notatki zostają na dysku."),
+    h("p", { class: "muted small" }, auto ? "Serwer i tak wyłącza się sam po zamknięciu okna aplikacji, gdy nic nie jest przetwarzane."
+      : "Serwer nie ma ustawionego samoczynnego wyłączania (uruchomiono go ręcznie)."),
+    h("div", { class: "actions" }, h("button", { onclick: closeDialog }, "Anuluj"),
+      h("button", { class: "danger", onclick: async () => {
+        try {
+          await api("/api/shutdown", { method: "POST" });
+          closeDialog();
+          showStopped();
+        } catch (e) { closeDialog(); toast(e.message); }
+      } }, "Zakończ")));
+}
+
+function showStopped() {
+  state.stopped = true;
+  if (window.__es) window.__es.close();
+  detailId = null; activeTab = null; stopLogs(); clearInterval(logsTimer);
+  $("#banner").hidden = true;
+  $("#sys").replaceChildren();
+  $("#view").replaceChildren(h("div", { class: "empty" }, "Serwer został wyłączony.",
+    h("div", { class: "small", style: "margin-top:8px" }, "Możesz zamknąć to okno. Aby wrócić, uruchom aplikację ponownie (skrót lub ", h("code", {}, "scripts\\start.bat"), ").")));
+}
+
 async function openDiagnostics(videoId) {
   const body = h("div", { class: "muted" }, "Ładowanie…");
   openDialog(h("h2", {}, "Szczegóły błędu"), body, h("div", { class: "actions" }, h("button", { onclick: closeDialog }, "Zamknij")));
@@ -498,6 +524,7 @@ function route() {
   }
 }
 function rerender() {
+  if (state.stopped) return;
   renderSys();
   updateBanner();
   if (location.hash === "#/logs") return;
@@ -520,6 +547,7 @@ async function loadSystem() {
 
 function connect() {
   const es = new EventSource("/api/stream");
+  window.__es = es;
   es.addEventListener("state", (e) => {
     const d = JSON.parse(e.data);
     state.queue = d.queue; state.videos = d.videos; state.gpu = d.gpu_holder;
@@ -530,7 +558,10 @@ function connect() {
   es.onerror = () => { state.connected = false; rerender(); };
 }
 
-window.addEventListener("hashchange", route);
+document.addEventListener("click", (e) => {
+  if (e.target.closest("#quit")) { e.preventDefault(); openShutdownDialog(); }
+});
+window.addEventListener("hashchange", () => { if (!state.stopped) route(); });
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 route();
 connect();

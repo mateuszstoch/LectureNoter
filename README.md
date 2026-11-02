@@ -37,9 +37,14 @@ Wymagany jest Python **3.10+** (zalecany 3.11). Na starszym Ubuntu: `sudo add-ap
 Uruchom `scripts\start.bat` (dwuklik albo skrót na Pulpicie/pasku zadań). Skrypt:
 
 1. wyznacza folder projektu z położenia samego pliku i zamienia go na ścieżkę WSL (`C:\Users\Jan\LectureNoter` → `/mnt/c/Users/Jan/LectureNoter`),
-2. uruchamia serwer w WSL (okno „LectureNoter server” pokazuje postęp i błędy; pierwsze uruchomienie instaluje zależności i trwa kilka minut),
-3. otwiera aplikację w oknie Edge/Chrome bez paska przeglądarki.
+2. uruchamia serwer w WSL **w tle, bez okna terminala** (pierwsze uruchomienie instaluje zależności i trwa kilka minut; postęp widać w konsoli skryptu),
+3. otwiera aplikację w oknie Edge/Chrome bez paska przeglądarki, a konsola skryptu się zamyka.
 
+**Wyłączanie.** Serwer wyłącza się sam ok. 30 s po zamknięciu okna aplikacji. Dopóki trwa przetwarzanie lub odpowiedź czatu, działa dalej nawet bez okna i wyłącza się po jej zakończeniu. Możesz też użyć linku „Zakończ” w nagłówku aplikacji (odmówi, gdy coś się przetwarza).
+
+**Komputer nie zasypia w trakcie pracy.** Na czas przetwarzania serwer prosi system o niewyłączanie komputera (ekran nadal może gasnąć). Jeśli mimo to serwer znika po wygaszeniu ekranu, sprawdź w Windows: Ustawienia → System → Zasilanie → „Uśpienie” ustaw na „Nigdy” (przynajmniej przy zasilaniu z sieci). Przerwane zadanie wznowisz z aplikacji (przycisk „Wznów”), bo wyniki częściowe są zachowane.
+
+- Log startu serwera: `work\launch.log` w katalogu projektu (przy błędzie skrypt pokazuje jego koniec), log aplikacji: link „Logi”.
 - Gdy projekt jest na dysku Windows (`/mnt/...`), środowisko Pythona jest tworzone w `~/.local/share/lecturenoter/venv` (NTFS jest wolny i słabo znosi dowiązania). Odczyt plików z `/mnt/c` jest wolniejszy niż z systemu plików WSL, ale działa.
 - Domyślna dystrybucja WSL inna niż Ubuntu (np. `docker-desktop`): ustaw zmienną `LECTURENOTER_DISTRO=Ubuntu` (nazwy: `wsl -l`).
 - Własna ścieżka projektu w WSL: `LECTURENOTER_DIR=/home/jan/LectureNoter`.
@@ -49,10 +54,11 @@ Uruchom `scripts\start.bat` (dwuklik albo skrót na Pulpicie/pasku zadań). Skry
 ### Linux / terminal WSL
 
 ```bash
-scripts/start.sh        # z dowolnego katalogu; http://localhost:8000
+scripts/start.sh            # na pierwszym planie (Ctrl+C kończy); http://localhost:8000
+scripts/start.sh --bg       # w tle, bez terminala; sam się wyłączy po zamknięciu okna aplikacji
 ```
 
-Opcje: `LECTURENOTER_VENV` (katalog środowiska), `LECTURENOTER_PYTHON` (interpreter), argumenty trafiają do serwera (np. `scripts/start.sh --port 8001`).
+Opcje: `LECTURENOTER_VENV` (katalog środowiska), `LECTURENOTER_PYTHON` (interpreter), pozostałe argumenty trafiają do serwera (np. `--port 8001`). Samo `python server.py` nie wyłącza się samo; dodaj `--auto-exit` (opcjonalnie `--idle-grace 60`), żeby zachowywał się jak w trybie tła.
 
 ### Wskazówki dla WSL2
 

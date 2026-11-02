@@ -9,7 +9,8 @@ Zmienne srodowiskowe (opcjonalne):
   LECTURENOTER_PYTHON   interpreter do utworzenia venv (domyslnie najnowszy znaleziony python 3.10+)
   LECTURENOTER_VENV     katalog venv (domyslnie <projekt>/.venv; gdy projekt jest na dysku Windows pod /mnt/,
                         domyslnie ~/.local/share/lecturenoter/venv, bo NTFS jest wolny i slabo znosi dowiazania)
-Argumenty skryptu (np. --port 8001) sa przekazywane do server.py.
+Argumenty skryptu (np. --port 8001, --auto-exit) sa przekazywane do server.py. Wyjatek: --background (--bg) uruchamia
+serwer w tle, bez terminala (log: work/launch.log), z --auto-exit, czyli sam wylaczy sie po zamknieciu okna aplikacji.
 """
 import hashlib
 import os
@@ -103,7 +104,22 @@ def ensure_venv(venv, root=ROOT):
     return vpy
 
 
+def spawn_background(vpy, args):
+    """Uruchamia serwer odlaczony od terminala; log w work/launch.log."""
+    log_dir = ROOT / "work"
+    log_dir.mkdir(exist_ok=True)
+    log = open(log_dir / "launch.log", "w", encoding="utf-8")
+    proc = subprocess.Popen([str(vpy), "server.py"] + args, cwd=str(ROOT), stdin=subprocess.DEVNULL, stdout=log,
+                            stderr=log, start_new_session=True)
+    say(f"Serwer uruchomiony w tle (pid {proc.pid}), log: {log_dir / 'launch.log'}")
+    say("Adres: http://localhost:8000 . Wylaczy sie sam po zamknieciu okna aplikacji (albo przycisk 'Zakoncz').")
+
+
 def main(argv):
+    background = any(a in ("--background", "--bg") for a in argv)
+    argv = [a for a in argv if a not in ("--background", "--bg")]
+    if background and "--auto-exit" not in argv:
+        argv.append("--auto-exit")  # bez terminala nie bylo by czym go zatrzymac
     os.chdir(ROOT)
     say(f"Katalog projektu: {ROOT}")
     if str(ROOT).startswith("/mnt/"):
@@ -120,6 +136,9 @@ def main(argv):
         if run([vpy, "-m", "pip", "install", "-r", ROOT / "requirements.txt"]).returncode != 0:
             die("Instalacja zaleznosci nie powiodla sie (patrz komunikaty powyzej).")
         (venv / ".lecturenoter-requirements").write_text(requirements_stamp())
+    if background:
+        spawn_background(vpy, list(argv))
+        return
     say("Start serwera: http://localhost:8000 (Ctrl+C konczy)")
     os.execv(str(vpy), [str(vpy), "server.py"] + list(argv))
 
