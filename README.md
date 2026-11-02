@@ -16,7 +16,7 @@ Wyniki trafiają do `work/<nazwa_filmu>/`. Przerwany pipeline można uruchomić 
 
 - Python 3.11+
 - `ffmpeg` i `ffprobe` w `PATH`
-- sterownik NVIDIA, CUDA 12 i cuDNN 9 (dla faster-whisper)
+- sterownik NVIDIA (cuBLAS 12 i cuDNN 9 dla faster-whisper instalują się z `requirements.txt` jako pakiety pip; orkiestrator sam ustawia dla nich `LD_LIBRARY_PATH`)
 - [Ollama](https://ollama.com) uruchomiona lokalnie
 
 ## Instalacja
@@ -54,7 +54,7 @@ Brak ścieżki audio w pliku: ASR jest pomijany, a notatki powstają tylko z tab
 Działa przez WSL2 z GPU (niesprawdzone przez autora, testowane tylko na macOS):
 
 - Sterownik NVIDIA instaluj **tylko w Windowsie**. W WSL `nvidia-smi` ma pokazać kartę.
-- W WSL doinstaluj cuDNN 9 i cuBLAS 12 dla faster-whisper: CUDA toolkit w wariancie `wsl-ubuntu` albo `pip install nvidia-cublas-cu12 nvidia-cudnn-cu12`.
+- cuDNN 9 i cuBLAS 12 instalują się z `requirements.txt`. Błąd `libcublas.so.12 is not found`: zrób `pip install -r requirements.txt` ponownie w aktywnym `.venv`.
 - Najprościej zainstalować **Ollamę w WSL** (jak w instalacji powyżej). Bez systemd uruchom ją ręcznie: `ollama serve`. Nie uruchamiaj jednocześnie Ollamy z Windowsa, bo oba serwery mogą trzymać modele w VRAM.
 - W `%UserProfile%\.wslconfig` zwiększ pamięć, np. `[wsl2]` i `memory=24GB` (domyślnie WSL dostaje ok. 50% RAM).
 - Projekt i filmy trzymaj w systemie plików WSL (np. `~/`), nie w `/mnt/c/...`, bo tam I/O jest dużo wolniejsze.

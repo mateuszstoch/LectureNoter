@@ -23,6 +23,22 @@ LEFTOVERS = {"asr": ["audio.wav"], "frames": ["frames"], "vlm": ["vision_context
 GPU_STAGES = {"asr", "vlm", "llm"}
 
 
+def cuda_lib_env():
+    """Srodowisko z pip-owymi bibliotekami cuBLAS/cuDNN (wymagane przez faster-whisper) w LD_LIBRARY_PATH."""
+    import os
+    env = os.environ.copy()
+    dirs = []
+    for mod in ("nvidia.cublas", "nvidia.cudnn"):
+        try:
+            pkg = __import__(mod, fromlist=["x"])
+            dirs.append(str(Path(list(pkg.__path__)[0]) / "lib"))
+        except Exception:
+            pass
+    if dirs:
+        env["LD_LIBRARY_PATH"] = ":".join(dirs + [env.get("LD_LIBRARY_PATH", "")]).rstrip(":")
+    return env
+
+
 def file_hash(path):
     p = Path(path)
     return hashlib.sha256(p.read_bytes()).hexdigest()[:16] if p.exists() else "-"
@@ -97,7 +113,7 @@ class PipelineOrchestrator:
         """Etapy GPU w osobnym podprocesie: VRAM zwalnia sie po zakonczeniu procesu."""
         cmd = [sys.executable, str(Path(__file__).resolve()), "--worker", stage, str(self.video),
                "--workdir", str(self.workdir), "--language", self.language, "--profile", self.profile]
-        r = subprocess.run(cmd)
+        r = subprocess.run(cmd, env=cuda_lib_env())
         if r.returncode != 0:
             raise RuntimeError(f"etap {stage} zakonczyl sie kodem {r.returncode}")
 
