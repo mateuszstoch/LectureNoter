@@ -20,6 +20,7 @@ def make_workdir(wd, with_logs=True):
     (wd / "transcript.json").write_text(json.dumps([{"start": 0, "end": 1, "text": "Dzień dobry"}]), encoding="utf-8")
     (wd / "lecture_notes.md").write_text("# Notatki\n$x^2$ ąęł", encoding="utf-8")
     (wd / "chat.json").write_text(json.dumps({"chats": [{"id": "a"}]}), encoding="utf-8")
+    (wd / "quizzes.json").write_text(json.dumps({"quizzes": [{"id": "q1", "questions": [], "attempts": []}]}), encoding="utf-8")
     (wd / "stage_state.json").write_text(json.dumps({"llm": {"status": "done", "config": "x", "input": "y"}}), encoding="utf-8")
     (wd / "frames").mkdir()
     (wd / "frames" / "frame_000001_t00001.jpg").write_bytes(b"\xff\xd8jpg" * 100)
@@ -60,7 +61,7 @@ def test_build_inspect_extract_round_trip(tmp_path):
     assert names[0] == "manifest.json"
     assert "data/lecture_notes.md" in names and "data/frames/frame_000001_t00001.jpg" in names and "data/notes_history/20260101-120000.md" in names
     assert not any(n.endswith((".log", ".tmp", "audio.wav", "job.out", "run_state.json", "progress.json", "checkpoints.json")) for n in names)
-    assert manifest["files"] == 8 and manifest["has_video"] is False and manifest["folder_path"] == ["Semestr 3"]
+    assert manifest["files"] == 9 and manifest["has_video"] is False and manifest["folder_path"] == ["Semestr 3"]
     assert seen[-1][0] == seen[-1][1] > 0                      # postep dochodzi do 100%
     info = ar.inspect_archive(dest)
     assert info["meta"]["title"] == META["title"] and info["manifest"]["version"] == ar.VERSION
@@ -130,6 +131,8 @@ def test_unknown_entries_are_ignored_and_never_extracted(tmp_path):
     (lambda p: zip_with(p, {**GOOD, "data/transcript.json": json.dumps({"to": "nie lista"})}), "niepoprawna strukture"),
     (lambda p: zip_with(p, {**GOOD, "video/a.mp4": b"1", "video/b.mp4": b"2"}), "wiecej niz jeden plik wideo"),
     (lambda p: zip_with(p, {**GOOD, "data/chat.json": json.dumps({"chats": [{"title": "bez id"}]})}), "Rozmowa w chat.json"),
+    (lambda p: zip_with(p, {**GOOD, "data/quizzes.json": json.dumps({"quizzes": [{"title": "bez id"}]})}), "Quiz w quizzes.json"),
+    (lambda p: zip_with(p, {**GOOD, "data/quizzes.json": json.dumps([1])}), "quizzes.json"),
     (lambda p: zip_with(p, {**GOOD, "data/chat.json": json.dumps({"chats": [{"id": "a", "messages": [{"role": "hacker", "content": "x"}]}]})}), "Rozmowa w chat.json"),
 ])
 def test_invalid_archives_give_clear_errors(tmp_path, build, message):

@@ -294,7 +294,7 @@ function mountDetail(id, tab) {
   const view = $("#view");
   const tabBtn = (key, label) => h("a", { class: "tab", role: "tab", href: `#/video/${id}${key === "process" ? "" : "/" + key}`, "aria-selected": String(tab === key) }, label);
   const tabs = h("div", { class: "tabs", role: "tablist" }, tabBtn("process", "Przetwarzanie"), tabBtn("notes", "Notatki"),
-    tabBtn("materials", "Materiały"), tabBtn("chat", "Czat"));
+    tabBtn("materials", "Materiały"), tabBtn("chat", "Czat"), tabBtn("quiz", "Quiz"));
   const content = h("div", { id: "dtab" });
   view.replaceChildren(h("div", { id: "dhead" }), tabs, content);
   if (tab === "process") {
@@ -308,6 +308,8 @@ function mountDetail(id, tab) {
     mountMaterialsTab(content, id);
   } else if (tab === "chat") {
     mountChatTab(content, id);
+  } else if (tab === "quiz") {
+    mountQuizTab(content, id);
   }
   updateDetail();
 }
@@ -366,6 +368,7 @@ async function openDeleteDialog(v) {
   const lost = ["transkrypt, klatki z tablicy i opisy (VLM)", "wygenerowane notatki"];
   if (p.has_edited_notes) lost.push("Twoja edytowana wersja notatek i jej historia");
   if (p.chat_count) lost.push(`rozmowy czatu (${p.chat_count})`);
+  if (p.quiz_count) lost.push(`quizy (${p.quiz_count})`);
   body.replaceChildren(...kids(
     h("p", {}, h("b", {}, v.title || v.id), `: usunięte zostaną dane przetwarzania (${mb}) bez możliwości przywrócenia:`),
     h("ul", {}, lost.map((x) => h("li", {}, x))),
@@ -524,7 +527,7 @@ function route() {
     renderServerLogs();
     return;
   }
-  const m = location.hash.match(/^#\/video\/([a-z0-9_-]+)(?:\/(notes|materials|chat))?/);
+  const m = location.hash.match(/^#\/video\/([a-z0-9_-]+)(?:\/(notes|materials|chat|quiz))?/);
   if (m) {
     const tab = m[2] || "process";
     if (detailId !== m[1] || detailTab !== tab || !$("#dhead")) {

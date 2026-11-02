@@ -344,3 +344,36 @@ pre.vlm { white-space: pre-wrap; background: var(--sunk); padding: 8px 12px; fon
   .notes-body { max-width: none; color: #000; }
   .notes-body h2 { break-after: avoid; } a.ts { color: #000; border: 0; }
 }
+
+/* ---------- quiz ---------- */
+.quiz-card { margin-bottom: 10px; }
+.field-label { font: 500 12px var(--sans); letter-spacing: .07em; text-transform: uppercase; color: var(--ink-2); margin: 14px 0 6px; }
+.quiz-types { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+.opt.on { border-color: var(--accent); }
+.quiz-scopes { display: grid; gap: 4px; margin-top: 6px; max-height: 220px; overflow: auto; padding: 6px; border: 1px solid var(--rule); background: var(--sunk); }
+.quiz-score { font: 600 40px/1 var(--serif); }
+.quiz-hist { padding: 8px 0; border-bottom: 1px solid var(--rule); }
+.qbar { height: 4px; background: var(--rule); margin: 8px 0 12px; }
+.qbar > div { height: 100%; background: var(--accent); transition: width .3s; }
+.qcard { padding: 18px; }
+.qtext { font-size: 17px; line-height: 1.5; margin-bottom: 12px; }
+.qinput { width: 100%; font: 16px var(--serif); padding: 8px 10px; background: var(--paper); color: var(--ink); border: 1px solid var(--ink); border-radius: 2px; }
+.quiz-opts { display: grid; gap: 8px; margin-top: 8px; }
+.qopt { display: block; padding: 10px 12px; border: 1px solid var(--rule); background: var(--paper); border-radius: 2px; }
+.qopt.pick { cursor: pointer; display: flex; gap: 8px; align-items: baseline; }
+.qopt.pick:hover { border-color: var(--ink); }
+.qopt.ok { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, var(--paper)); }
+.qopt.bad { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, var(--paper)); }
+.qopt.chosen { border-width: 2px; }
+.qmark { font-weight: 700; min-width: 1.2em; display: inline-block; }
+.qmark.ok, .qopt.ok .qmark { color: var(--ok); } .qmark.bad, .qopt.bad .qmark { color: var(--accent); } .qmark.warn { color: var(--warn); }
+.qwhy { margin: 4px 0 0 26px; color: var(--ink-2); }
+.qfeedback { margin-top: 14px; display: grid; gap: 10px; }
+.qverdict { font: 600 15px var(--sans); }
+.qverdict.ok { color: var(--ok); } .qverdict.bad { color: var(--accent); } .qverdict.warn { color: var(--warn); }
+.qyours { white-space: pre-wrap; padding: 8px 10px; background: var(--sunk); border-left: 3px solid var(--rule); }
+.qrev { margin-top: 8px; }
+.qrev > summary { cursor: pointer; }
+.quiz-result { text-align: center; }
+@media (max-width: 600px) { .qcard { padding: 12px; } .qtext { font-size: 16px; } }
+.quiz-types .opt { border: 1px solid var(--rule); padding: 10px 12px; margin: 0; background: var(--paper); border-radius: 2px; }

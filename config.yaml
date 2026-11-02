@@ -21,4 +21,5 @@ frames:
   jpeg_quality: 90
 vlm: { model: "qwen2.5vl:7b", num_predict: 800, keep_alive: "10m", max_side: 1344, num_ctx: 4096, reload_every: 25, frame_retries: 2, max_failed_frames: 3 }
 llm: { prompt_version: 3, chunk_minutes: 10, num_predict: 3000, temperature: 0.3, repeat_penalty: 1.1, loop_retries: 2 }
+quiz: { pass_ratio: 0.8, num_predict: 3000, temperature: 0.5, max_count: 30 }   # quizy: prog zaliczenia = 80%
 chat: { num_predict: 1200, temperature: 0.2, history_ratio: 0.25, idle_release_s: 600, timeout_s: 600 }

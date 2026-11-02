@@ -1,4 +1,5 @@
 """Czat z notatkami i transkryptem (lokalny LLM przez Ollame): kontekst, historia, streszczanie, blokada GPU."""
+import contextlib
 import json
 import threading
 import time
@@ -169,6 +170,10 @@ class ChatService:
 
     def _acquire(self, model):
         with self._lock:
+            if self._generating:
+                err = ChatBusy("Model jest teraz zajęty inną odpowiedzią (czat lub quiz). Spróbuj za chwilę.")
+                err.transient = True  # chwilowe: inne zadania (quizy) moga poczekac w kolejce
+                raise err
             if not self._held:
                 if not self.gpu.acquire("chat"):
                     h = self.gpu.holder() or {}
@@ -214,6 +219,19 @@ class ChatService:
                 self.gpu.release()
                 self._held, self._model = False, None
             return True
+
+    @contextlib.contextmanager
+    def session(self, video_id, model):
+        """Wspolny dostep do modelu dla innych funkcji (quizy): ta sama blokada GPU, zwolnienie po czasie bezczynnosci."""
+        self._acquire(model)
+        self._gen_video = video_id
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._generating = False
+                self._gen_video = None
+            self._schedule_release()
 
     def is_generating_for(self, video_id):
         with self._lock:

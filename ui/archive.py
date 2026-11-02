@@ -24,7 +24,7 @@ TEXT_EXT = {".json", ".jsonl", ".md", ".txt"}
 
 EXCLUDED_NAMES = {"pipeline.log", "job.out", "run_state.json", "progress.json", "checkpoints.json", "worker_error.json", "audio.wav"}
 ALLOWED_FILES = {"meta.json", "transcript.json", "frames_metadata.json", "vision_context.json", "vision_context.jsonl",
-                 "lecture_notes.md", "lecture_notes.edited.md", "notes_meta.json", "chat.json", "stage_state.json"}
+                 "lecture_notes.md", "lecture_notes.edited.md", "notes_meta.json", "chat.json", "quizzes.json", "stage_state.json"}
 ALLOWED_DIRS = {"frames": {".jpg"}, "chunks": {".md", ".json"}, "notes_history": {".md"}}
 _SAFE_NAME = re.compile(r"^[\w.\- ()]+$")
 
@@ -152,6 +152,16 @@ def _validate_data(zf, entries):
                         for m in c.get("messages", []))
             if not ok:
                 raise ArchiveError("Rozmowa w chat.json ma niepoprawna strukture.")
+    if "quizzes.json" in names:
+        qz = _load_json(zf, "data/quizzes.json")
+        if not isinstance(qz, dict) or not isinstance(qz.get("quizzes", []), list):
+            raise ArchiveError("Plik quizzes.json w archiwum ma niepoprawna strukture.")
+        for q in qz.get("quizzes", []):
+            ok = isinstance(q, dict) and isinstance(q.get("id"), str) and q["id"] and isinstance(q.get("questions", []), list) \
+                and isinstance(q.get("attempts", []), list) and all(isinstance(x, dict) and isinstance(x.get("id"), str)
+                                                                  for x in q.get("questions", []))
+            if not ok:
+                raise ArchiveError("Quiz w quizzes.json ma niepoprawna strukture.")
     return meta
 
 

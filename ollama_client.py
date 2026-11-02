@@ -69,9 +69,11 @@ class OllamaClient:
         except requests.RequestException as e:
             raise OllamaError(f"Serwer Ollama nie odpowiada pod {self.host}: {e}")
 
-    def generate(self, model, prompt, system=None, images=None, options=None, keep_alive="10m"):
+    def generate(self, model, prompt, system=None, images=None, options=None, keep_alive="10m", format=None):
         payload = {"model": model, "prompt": prompt, "stream": False, "keep_alive": keep_alive,
                    "options": options or {}}
+        if format:
+            payload["format"] = format  # np. "json": Ollama wymusza poprawny JSON
         if system:
             payload["system"] = system
         if images:

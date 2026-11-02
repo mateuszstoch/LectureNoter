@@ -33,7 +33,8 @@ from io_utils import read_json
 from main import STAGES
 from ollama_client import OllamaClient, pick_profile, total_vram_gb, vram_used_gb
 from ui import materials, notes as notes_mod
-from ui.chat import ChatError, ChatService, ChatStore, export_markdown
+from ui.chat import ChatBusy, ChatError, ChatService, ChatStore, export_markdown
+from ui.quiz import QuizError, QuizService
 from starlette.background import BackgroundTask
 
 from ui import archive as archive_mod
@@ -114,6 +115,21 @@ class ChatMessage(BaseModel):
     model: str | None = None
 
 
+class QuizCreate(BaseModel):
+    type: str
+    count: int = 10
+    sections: list[str] = []
+    topic: str = ""
+    model: str | None = None
+    title: str | None = None
+
+
+class QuizAnswer(BaseModel):
+    question_id: str
+    answer: str | list[int] | None = None
+    self_score: float | None = None
+
+
 class MoveRequest(BaseModel):
     position: int
 
@@ -172,8 +188,10 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
     app = FastAPI(title="LectureNoter", lifespan=lifespan)
     ollama = ollama or OllamaClient(timeout=C().get("chat", {}).get("timeout_s", 600))
     chat = ChatService(lib, gpu, cfg, ollama)
+    quizzes = QuizService(lib, chat, cfg, ollama)
     jm.set_preempt(chat.preempt)  # zadanie czekajace na GPU zwalnia model czatu (gdy ten nie generuje)
     app.state.chat, app.state.tracker, app.state.is_busy = chat, tracker, is_busy
+    app.state.quizzes = quizzes
     app.state.auto_exit = auto_exit
     app.state.previous_exit, app.state.exit_reason, app.state.started_at = None, None, time.time()
     app.state.request_exit = lambda: None  # main() podstawia zatrzymanie serwera uvicorn
@@ -243,8 +261,8 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
         wd = guard(lambda: lib.workdir(vid))
         if jm.has_active(vid) or is_live(read_run_state(wd)):
             raise HTTPException(409, "Film jest w kolejce lub trwa jego przetwarzanie. Najpierw anuluj zadanie.")
-        if chat.is_generating_for(vid):
-            raise HTTPException(409, "Trwa odpowiedz czatu dla tego wykladu. Zatrzymaj ja lub poczekaj.")
+        if chat.is_generating_for(vid) or quizzes.is_generating(vid):
+            raise HTTPException(409, "Trwa odpowiedz czatu lub generowanie quizu dla tego wykladu. Zatrzymaj je lub poczekaj.")
 
     @app.get("/api/videos/{vid}/delete-preview")
     def delete_preview(vid: str):
@@ -613,6 +631,51 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
                     pass  # generator jeszcze w trakcie: zakonczy sie sam po zobaczeniu `cancel`
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    # --- quizy ---
+    def quiz_guard(fn):
+        try:
+            return fn()
+        except ChatBusy as e:
+            raise HTTPException(409, str(e))
+        except QuizError as e:
+            raise HTTPException(404 if "nie ma takiego" in str(e) else 400, str(e))
+
+    @app.get("/api/videos/{vid}/quizzes")
+    def quiz_list(vid: str):
+        wd_of(vid)
+        return quizzes.list(vid)
+
+    @app.get("/api/videos/{vid}/quiz-scopes")
+    def quiz_scopes(vid: str):
+        wd_of(vid)
+        return quizzes.scopes(vid)
+
+    @app.post("/api/videos/{vid}/quizzes")
+    def quiz_create(vid: str, req: QuizCreate):
+        wd_of(vid)
+        return quiz_guard(lambda: quizzes.create(vid, req.type, req.count, req.sections, req.topic, req.model, req.title))
+
+    @app.get("/api/videos/{vid}/quizzes/{qid}")
+    def quiz_get(vid: str, qid: str):
+        wd_of(vid)
+        return quiz_guard(lambda: quizzes.get(vid, qid))
+
+    @app.delete("/api/videos/{vid}/quizzes/{qid}")
+    def quiz_delete(vid: str, qid: str):
+        wd_of(vid)
+        quiz_guard(lambda: quizzes.delete(vid, qid))
+        return {"ok": True}
+
+    @app.post("/api/videos/{vid}/quizzes/{qid}/attempts")
+    def quiz_attempt(vid: str, qid: str):
+        wd_of(vid)
+        return quiz_guard(lambda: quizzes.start_attempt(vid, qid))
+
+    @app.post("/api/videos/{vid}/quizzes/{qid}/attempts/{aid}/answer")
+    def quiz_answer(vid: str, qid: str, aid: str, req: QuizAnswer):
+        wd_of(vid)
+        return quiz_guard(lambda: quizzes.answer(vid, qid, aid, req.question_id, req.answer, req.self_score))
 
     def build_state():
         return {"queue": jm.snapshot(), "videos": lib.list_videos(), "gpu_holder": gpu.holder(), "folders": folders_with_counts()}

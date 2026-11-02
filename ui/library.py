@@ -241,6 +241,7 @@ class Library:
         return {"size_bytes": self.disk_usage(video_id),
                 "has_edited_notes": (wd / "lecture_notes.edited.md").exists(),
                 "chat_count": len(chats.get("chats", [])),
+                "quiz_count": len((read_json(wd / "quizzes.json", {"quizzes": []}) or {}).get("quizzes", [])),
                 "video_entry": entry.relative_to(self.videos_dir.resolve()).as_posix() if entry else None,
                 "video_is_link": bool(entry and entry.is_symlink())}
 
