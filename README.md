@@ -1,27 +1,41 @@
 # LectureNoter
 
-Lokalny generator notatek z nagrań wykładów (mowa + tablica/slajdy → notatki w Markdown) z aplikacją webową: kolejka przetwarzania, czytnik i edytor notatek oraz czat z lokalnym LLM o treści wykładu. Wszystko działa lokalnie, modele ładują się po kolei (jeden naraz w VRAM).
+Lokalny generator notatek z nagrań wykładów. Z nagrania (mowa + tablica lub slajdy) tworzy notatki w Markdown, a aplikacja webowa pozwala je czytać, edytować, przeszukiwać, omawiać z lokalnym modelem i sprawdzać wiedzę quizami. Wszystko działa na Twoim komputerze; modele ładują się po kolei (jeden naraz w VRAM).
+
+## Spis treści
+
+- [Jak to działa](#jak-to-działa)
+- [Wymagania](#wymagania)
+- [Instalacja i uruchomienie](#instalacja-i-uruchomienie)
+- [Funkcje aplikacji](#funkcje-aplikacji)
+- [Eksport i import wykładów (.lec)](#eksport-i-import-wykładów-lec)
+- [Linia poleceń (CLI)](#linia-poleceń-cli)
+- [Konfiguracja](#konfiguracja)
+- [Diagnostyka](#diagnostyka)
+- [Testy i status](#testy-i-status)
 
 ## Jak to działa
 
-1. **ASR** – `faster-whisper` (`large-v3-turbo`) → `transcript.json`
-2. **Tablica/slajdy** – ffmpeg + OpenCV wykrywa obszar tablicy i zapisuje jej stan tuż przed wymazaniem → `frames/`
-3. **VLM** – Ollama (`qwen2.5vl:7b`) odczytuje tekst z klatek → `vision_context.json`
-4. **LLM** – Ollama (`qwen2.5:7b-instruct` lub `14b-instruct`) składa notatki fragmentami → `lecture_notes.md`
+| Etap | Narzędzie | Wynik |
+|------|-----------|-------|
+| 1. Transkrypcja | `faster-whisper` (`large-v3-turbo`) | `transcript.json` |
+| 2. Klatki z tablicy | ffmpeg + OpenCV (stan tablicy tuż przed wymazaniem) | `frames/` |
+| 3. Odczyt tablicy | Ollama, `qwen2.5vl:7b` | `vision_context.json` |
+| 4. Notatki | Ollama, `qwen2.5:7b-instruct` lub `14b-instruct` | `lecture_notes.md` |
 
-Wyniki trafiają do `work/<nazwa_filmu>/`. Przerwane przetwarzanie wznawia się od ostatniego checkpointu, a zmiana konfiguracji powtarza tylko etapy, których dotyczy.
+Wyniki trafiają do `work/<nazwa_filmu>/`. Przerwane przetwarzanie wznawia się od ostatniego punktu kontrolnego, a zmiana konfiguracji powtarza tylko dotknięte nią etapy. Brak ścieżki audio jest dozwolony: notatki powstają wtedy tylko z tablicy.
 
 ## Wymagania
 
-**Backend działa tylko na Linuksie.** Na Windowsie uruchamiasz go w **WSL2** (nie natywnie: `python server.py` w PowerShellu się nie uruchomi). Potrzebne:
+Backend działa na **Linuksie**. Na Windowsie uruchamiasz go w **WSL2** (nie natywnie).
 
-- karta NVIDIA ze sterownikiem (na Windowsie sterownik instalujesz tylko w Windowsie, w WSL `nvidia-smi` ma pokazać kartę)
-- Python 3.10+ (zalecany 3.11), `ffmpeg`, [Ollama](https://ollama.com) uruchomiona w WSL
+- karta NVIDIA ze sterownikiem (w WSL `nvidia-smi` ma pokazywać kartę; sterownik instalujesz tylko w Windowsie)
+- Python 3.10+ (zalecany 3.11), `ffmpeg`, [Ollama](https://ollama.com) uruchomiona w WSL/Linuksie
 - opcjonalnie `pandoc` (eksport notatek do Worda)
 
 ## Instalacja i uruchomienie
 
-Projekt możesz mieć **na dysku Windows** (np. `C:\Users\...\LectureNoter`) albo w systemie plików WSL/Linuksa. Środowisko Pythona i zależności instalują się same przy pierwszym uruchomieniu (skrypt `scripts/launch.py`), więc ręczne `venv`/`pip` nie jest potrzebne. Jednorazowo potrzebujesz tylko pakietów systemowych i modeli (w terminalu WSL/Linux):
+Środowisko Pythona i zależności instalują się same przy pierwszym uruchomieniu (`scripts/launch.py`). Ręcznie potrzebne są tylko pakiety systemowe i modele:
 
 ```bash
 sudo apt install ffmpeg pandoc python3-venv
@@ -30,57 +44,79 @@ ollama pull qwen2.5:7b-instruct    # karta 8 GB
 ollama pull qwen2.5:14b-instruct   # karta 16 GB (opcjonalnie)
 ```
 
-Wymagany jest Python **3.10+** (zalecany 3.11). Na starszym Ubuntu: `sudo add-apt-repository ppa:deadsnakes/ppa && sudo apt update && sudo apt install python3.11 python3.11-venv python3.11-dev`. Skrypt sam wybierze najnowszy znaleziony interpreter (lub użyj `LECTURENOTER_PYTHON`).
+Na starszym Ubuntu nowszy Python: `sudo add-apt-repository ppa:deadsnakes/ppa && sudo apt install python3.11 python3.11-venv python3.11-dev`. Skrypt wybiera najnowszy znaleziony interpreter (lub użyj `LECTURENOTER_PYTHON`).
 
 ### Windows 11 (WSL2)
 
-Uruchom `scripts\start.bat` (dwuklik albo skrót na Pulpicie/pasku zadań). Skrypt:
+Uruchom `scripts\start.bat` (dwuklik lub skrót na Pulpicie). Skrypt zamienia ścieżkę projektu na ścieżkę WSL, startuje serwer w tle bez okna terminala i otwiera aplikację w oknie Edge/Chrome. Pierwsze uruchomienie instaluje zależności i trwa kilka minut.
 
-1. wyznacza folder projektu z położenia samego pliku i zamienia go na ścieżkę WSL (`C:\Users\Jan\LectureNoter` → `/mnt/c/Users/Jan/LectureNoter`),
-2. uruchamia serwer w WSL **w tle, bez okna terminala** (pierwsze uruchomienie instaluje zależności i trwa kilka minut; postęp widać w konsoli skryptu),
-3. otwiera aplikację w oknie Edge/Chrome bez paska przeglądarki, a konsola skryptu się zamyka.
-
-**Wyłączanie.** Serwer wyłącza się sam ok. 15 s po zamknięciu okna aplikacji. Jeśli połączenie okna tylko się zerwie (uśpienie komputera lub karty, przerwa w sieci), czeka 2 minuty, żeby nie znikać spod otwartego okna (`--idle-grace`). Dopóki trwa przetwarzanie lub odpowiedź czatu, działa dalej nawet bez okna i wyłącza się po jej zakończeniu. Możesz też użyć linku „Zakończ” w nagłówku aplikacji (odmówi, gdy coś się przetwarza).
-
-**Komputer nie zasypia w trakcie pracy.** Na czas przetwarzania serwer prosi system o niewyłączanie komputera (ekran nadal może gasnąć). Jeśli mimo to serwer znika po wygaszeniu ekranu, sprawdź w Windows: Ustawienia → System → Zasilanie → „Uśpienie” ustaw na „Nigdy” (przynajmniej przy zasilaniu z sieci). Przerwane zadanie wznowisz z aplikacji (przycisk „Wznów”), bo wyniki częściowe są zachowane.
-
-- Log startu serwera: `work\launch.log` w katalogu projektu (przy błędzie skrypt pokazuje jego koniec), log aplikacji: link „Logi”.
-- Gdy projekt jest na dysku Windows (`/mnt/...`), środowisko Pythona jest tworzone w `~/.local/share/lecturenoter/venv` (NTFS jest wolny i słabo znosi dowiązania). Odczyt plików z `/mnt/c` jest wolniejszy niż z systemu plików WSL, ale działa.
-- Domyślna dystrybucja WSL inna niż Ubuntu (np. `docker-desktop`): ustaw zmienną `LECTURENOTER_DISTRO=Ubuntu` (nazwy: `wsl -l`).
-- Własna ścieżka projektu w WSL: `LECTURENOTER_DIR=/home/jan/LectureNoter`.
-- Jeśli nic się nie dzieje, uruchom `scripts\start.bat` z `cmd` (nie dwuklikiem), żeby zobaczyć komunikaty.
-- Aplikację można też zainstalować z przeglądarki (Edge: menu → Aplikacje → „Zainstaluj tę witrynę jako aplikację”). Okno zainstalowanej aplikacji nie uruchamia serwera: najpierw musi działać `start.bat`.
+- **Wyłączanie:** serwer kończy pracę ok. 15 s po zamknięciu okna aplikacji (2 min, gdy połączenie tylko się zerwało, np. po uśpieniu). Podczas przetwarzania lub odpowiedzi czatu działa dalej i wyłącza się po ich zakończeniu. Można też użyć linku „Zakończ” w nagłówku.
+- **Uśpienie komputera:** na czas przetwarzania serwer prosi system o niewyłączanie komputera. Jeśli mimo to znika po wygaszeniu ekranu, ustaw w Windowsie Zasilanie → Uśpienie → „Nigdy”. Przerwane zadanie wznowisz przyciskiem „Wznów”.
+- **Pliki projektu na dysku Windows** (`/mnt/c/...`) działają, ale środowisko Pythona trafia wtedy do `~/.local/share/lecturenoter/venv` (NTFS jest wolny).
+- **Zmienne:** `LECTURENOTER_DISTRO` (dystrybucja WSL inna niż domyślna, nazwy: `wsl -l`), `LECTURENOTER_DIR` (własna ścieżka projektu w WSL).
+- **Diagnostyka startu:** log w `work\launch.log`; przy braku reakcji uruchom `start.bat` z `cmd`, by zobaczyć komunikaty.
+- **PWA:** aplikację można zainstalować z przeglądarki, ale jej okno nie uruchamia serwera, więc najpierw musi działać `start.bat`.
 
 ### Linux / terminal WSL
 
 ```bash
-scripts/start.sh            # na pierwszym planie (Ctrl+C kończy); http://localhost:8000
-scripts/start.sh --bg       # w tle, bez terminala; sam się wyłączy po zamknięciu okna aplikacji
+scripts/start.sh          # na pierwszym planie, http://localhost:8000 (Ctrl+C kończy)
+scripts/start.sh --bg     # w tle; sam się wyłączy po zamknięciu okna aplikacji
 ```
 
-Opcje: `LECTURENOTER_VENV` (katalog środowiska), `LECTURENOTER_PYTHON` (interpreter), pozostałe argumenty trafiają do serwera (np. `--port 8001`). Samo `python server.py` nie wyłącza się samo; dodaj `--auto-exit` (opcjonalnie `--idle-grace 60`), żeby zachowywał się jak w trybie tła.
+Zmienne: `LECTURENOTER_VENV` (katalog środowiska), `LECTURENOTER_PYTHON`. Pozostałe argumenty trafiają do serwera (np. `--port 8001`). Bezpośrednie `python server.py` nie wyłącza się samo; dodaj `--auto-exit`.
 
 ### Wskazówki dla WSL2
 
-- **Ollama zainstaluj w WSL** i nie uruchamiaj jej równolegle w Windowsie (dwa serwery mogą trzymać modele w VRAM jednocześnie). Bez systemd uruchom ją ręcznie: `ollama serve`.
-- W `%UserProfile%\.wslconfig` możesz zwiększyć pamięć: `[wsl2]` i `memory=24GB` (domyślnie WSL dostaje ok. 50% RAM). Po zmianie: `wsl --shutdown`.
-- Windows zajmuje ok. 0,5–1 GB VRAM. Na karcie 8 GB zamknij przeglądarkę i inne programy używające GPU na czas przetwarzania.
-- Błąd `libcublas.so.12 is not found`: uruchom ponownie `start.bat`/`start.sh` (doinstaluje zależności) albo usuń środowisko venv, żeby powstało od nowa.
+- Ollamę instaluj w WSL i nie uruchamiaj jej równolegle w Windowsie (dwa serwery mogą zajmować VRAM jednocześnie). Bez systemd: `ollama serve`. Inny adres: `OLLAMA_HOST=127.0.0.1:11435`.
+- Pamięć WSL zwiększysz w `%UserProfile%\.wslconfig` (`[wsl2]`, `memory=24GB`), potem `wsl --shutdown`.
+- Windows zajmuje ok. 0,5–1 GB VRAM; na karcie 8 GB zamknij inne programy używające GPU.
+- Błąd `libcublas.so.12 is not found`: uruchom ponownie skrypt startowy (doinstaluje zależności) albo usuń katalog venv.
 
-## Aplikacja
+## Funkcje aplikacji
 
-- **Porządek i wyszukiwanie:** wykłady można **przemianować** (zmienia się tylko wyświetlana nazwa, katalog `work/<id>` i plik wideo zostają), układać w **zagnieżdżonych folderach** (do 4 poziomów; przenoszenie przyciskiem „Przenieś” albo przeciąganiem na folder lub element ścieżki u góry; usunięcie folderu nie usuwa wykładów, tylko przenosi je poziom wyżej) oraz sortować (najnowsze, najstarsze, nazwa). **Wyszukiwarka** przeszukuje wszystkie wykłady naraz: tytuły i nazwy folderów, notatki (wersja edytowana ma pierwszeństwo), transkrypty i odczyt tablicy. Rozpoznaje polskie odmiany („maszynie” znajdzie „maszyna”), obsługuje frazy w cudzysłowie (`"maszyna Turinga"`), pokazuje fragmenty z podświetleniem i przenosi do właściwego miejsca (sekcja notatek albo moment z klatką i mową). Skrót `/` ustawia kursor w wyszukiwarce, Esc czyści zapytanie; w folderze można ograniczyć wyszukiwanie do niego.
-- **Biblioteka:** wybór filmu z katalogu `videos/`, lista z postępem czterech etapów, trwała kolejka (jedno zadanie naraz; pauza, zmiana kolejności, anulowanie).
-- **Usuwanie:** przycisk „Usuń” na karcie wykładu lub w jego szczegółach. Kasuje trwale dane przetwarzania (`work/<film>`: transkrypt, klatki, notatki, edycje, rozmowy) po potwierdzeniu z listą strat. Oryginalny film zostaje, chyba że zaznaczysz „Usuń także plik wideo” (dla dowiązania symbolicznego znika tylko dowiązanie). Blokowane, gdy film jest w kolejce, przetwarzany lub trwa odpowiedź czatu.
-- **Szczegóły filmu:** regeneracja pojedynczego etapu (z podglądem, co zostanie usunięte), uruchomienie całości od nowa, wznowienie po awarii, logi na żywo.
-- **Notatki:** Markdown z wzorami (KaTeX, działa offline), spis treści, wyszukiwanie, klikalne znaczniki czasu (pokazują tablicę i mowę z danego momentu). Edycja z historią wersji: wersja edytowana zapisuje się osobno (`lecture_notes.edited.md`) i nie jest nadpisywana przy ponownej generacji. Eksport: Markdown, PDF (przycisk „PDF” otwiera okno drukowania, wybierz „Zapisz jako PDF”), Word (wymaga `pandoc`).
-- **Materiały:** klatki z tablicy i przeszukiwalny transkrypt.
-- **Czat:** pytania do notatek, transkryptu i odczytu tablicy jednego filmu. Rozmowy można usuwać (okno potwierdzenia) i eksportować: Markdown (z wzorami i listą użytych fragmentów) oraz PDF (przycisk „PDF” otwiera okno drukowania, wybierz „Zapisz jako PDF”; wydruk zawsze w jasnych kolorach). Odpowiedzi są strumieniowane, rozmowy zapisują się per film, starsze tury są streszczane. Model wybierasz spośród zainstalowanych w Ollamie. Czat i przetwarzanie nie używają GPU jednocześnie: w czasie zadania czat jest wyłączony, a bezczynny model czatu jest zwalniany przed startem zadania.
-- **Quiz:** zakładka „Quiz” każdego wykładu generuje quizy lokalnym modelem z notatek i transkryptu. Typy: **ABCD z jedną** lub **z wieloma poprawnymi** odpowiedziami, **definicja → nazwa** (dostajesz opis, podajesz nazwę pojęcia; literówki i synonimy z listy są tolerowane, a własny synonim możesz uznać ręcznie) oraz **opisowy** (odpowiedź ocenia model względem wzorca; gdy model jest niedostępny, oceniasz sam). Wybierasz liczbę pytań (1-30) i obszar: cały wykład, wybrane sekcje notatek lub dowolny temat. Pytania mają sprawdzać zrozumienie, nie szczegóły typu daty czy numery slajdów. Po każdej odpowiedzi widzisz, czy była dobra, jaka jest poprawna i **dlaczego pozostałe opcje są błędne**. Quiz zalicza się przy co najmniej 80% (`quiz.pass_ratio`). Quizy zapisują się w wykładzie (`work/<film>/quizzes.json`, wchodzą też do plików `.lec`) z historią podejść, można je powtarzać i usuwać. Generowanie korzysta z tego samego GPU co czat: kilka quizów (i czat) czeka w kolejce na model, a gdy GPU zajmuje przetwarzanie filmu, nowy quiz nie wystartuje.
+**Biblioteka**
+- Wybór filmów z katalogu `videos/`, postęp czterech etapów, trwała kolejka (jedno zadanie naraz; pauza, zmiana kolejności, anulowanie).
+- Zmiana nazwy (tylko wyświetlanej), zagnieżdżone foldery (do 4 poziomów, przenoszenie przyciskiem lub przeciąganiem), sortowanie.
+- **Wyszukiwarka** po wszystkich wykładach: tytuły, foldery, notatki, transkrypty i odczyt tablicy. Rozumie polskie odmiany, obsługuje frazy w cudzysłowie, pokazuje fragmenty i przenosi do właściwego miejsca. Skrót `/` aktywuje pole, Esc czyści.
+- **Usuwanie** wykładu z listą tego, co zostanie utracone. Film źródłowy zostaje, chyba że zaznaczysz usunięcie także jego.
 
-Serwer sam przeładowuje `config.yaml` po zmianie pliku (np. po `git pull`), więc wyniki wygenerowane po zmianie konfiguracji nie wyglądają na „nieaktualne”. Po aktualizacji kodu zrestartuj serwer. Inna lokalizacja Ollamy: zmienna `OLLAMA_HOST` (np. `OLLAMA_HOST=127.0.0.1:11435`).
+**Szczegóły wykładu**
+- *Przetwarzanie:* regeneracja pojedynczego etapu (z podglądem skutków), uruchomienie od nowa, wznowienie po awarii, logi na żywo.
+- *Notatki:* Markdown z wzorami (KaTeX, offline), spis treści, wyszukiwanie, klikalne znaczniki czasu, edycja z historią wersji (wersja edytowana nie jest nadpisywana przy regeneracji). Eksport do Markdown, PDF (drukowanie przeglądarki) i Worda (wymaga `pandoc`).
+- *Materiały:* klatki z tablicy i przeszukiwalny transkrypt.
+- *Czat:* pytania do notatek, transkryptu i odczytu tablicy; odpowiedzi strumieniowane, rozmowy zapisywane i eksportowalne (Markdown, PDF), model do wyboru spośród zainstalowanych w Ollamie.
+- *Quiz:* patrz niżej.
 
-## Bez interfejsu (CLI)
+Czat, quizy i przetwarzanie nie używają GPU jednocześnie: w czasie zadania są niedostępne, a bezczynny model jest zwalniany przed jego startem.
+
+### Quizy
+
+Generowane lokalnym modelem z notatek i transkryptu.
+
+| Typ | Opis |
+|-----|------|
+| ABCD, jedna odpowiedź | cztery opcje, jedna poprawna |
+| ABCD, wiele odpowiedzi | trzeba zaznaczyć wszystkie poprawne |
+| Definicja → nazwa | dostajesz opis, podajesz nazwę pojęcia (tolerowane literówki i synonimy; własny synonim można uznać ręcznie) |
+| Opisowy | odpowiedź ocenia model względem wzorca; gdy jest niedostępny, oceniasz sam |
+
+Wybierasz liczbę pytań (1–30) i obszar: cały wykład, wybrane sekcje notatek lub dowolny temat. Pytania sprawdzają zrozumienie, nie szczegóły typu daty. Po każdej odpowiedzi widzisz poprawną odpowiedź i uzasadnienie, także dlaczego pozostałe opcje są błędne. Quiz jest zaliczony od 80% (`quiz.pass_ratio`). Quizy zapisują się z historią podejść (`work/<film>/quizzes.json`), można je powtarzać i usuwać. Kilka quizów czeka w kolejce na model.
+
+### Jakość notatek
+
+Mały model potrafi zapętlić się w powtórzeniach. Generator to wykrywa: ponawia generowanie z inną temperaturą i karą za powtórzenia (do 2 razy), a w ostateczności wycina powtórzenia. Pętle w opisach tablicy i transkrypcji są usuwane przed syntezą, a zdublowane sekcje scalane. Gdy fragmenty trzeba było naprawić, zakładka Notatki pokazuje ostrzeżenie z propozycją ponownej generacji. Parametry: `llm.repeat_penalty`, `llm.loop_retries`.
+
+## Eksport i import wykładów (.lec)
+
+`.lec` to zwykłe archiwum ZIP z innym rozszerzeniem, służące do przenoszenia wykładów między komputerami. Zawiera `manifest.json` (tytuł, folder, `uid`) oraz w `data/`: transkrypt, klatki, odczyt tablicy, notatki (wszystkie wersje), czaty, quizy i stan etapów. Logi i pliki tymczasowe są pomijane. Film jest opcjonalny (domyślnie niedołączany).
+
+- **Eksport:** „Eksportuj” przy wykładzie → rozmiar i opcja „Dołącz plik wideo” → pasek postępu → pobranie. Zablokowany w trakcie przetwarzania.
+- **Import:** „Importuj” na liście lub przeciągnięcie pliku na stronę. Po sprawdzeniu archiwum wybierasz: zapis dołączonego filmu do `videos/` (bez nadpisywania), miejsce w bibliotece oraz sposób obsługi duplikatu (po `uid`): kopia, zastąpienie lub pominięcie.
+- **Wykład bez filmu** działa normalnie (notatki, czat, quizy, wyszukiwarka, regeneracja notatek). Film wskażesz później w szczegółach („Wskaż plik wideo”); etapy czytające film wymagają go.
+- **Bezpieczeństwo:** archiwum jest traktowane jak niezaufane. Odrzucane są ścieżki spoza katalogu wykładu, dowiązania symboliczne, wpisy zaszyfrowane, bomby kompresji, uszkodzone sumy CRC i niepoprawny JSON; rozpakowywane są tylko znane pliki. Limit rozmiaru: `import.max_gb` (domyślnie 50).
+
+## Linia poleceń (CLI)
 
 ```bash
 python main.py wyklad.mp4
@@ -89,57 +125,38 @@ python main.py wyklad.mp4
 | Opcja | Znaczenie |
 |-------|-----------|
 | `--workdir DIR` | katalog wyników (domyślnie `work/<nazwa_filmu>`) |
-| `--profile auto\|8gb\|16gb` | wybór modelu LLM i `num_ctx` (domyślnie wykrywany z VRAM) |
+| `--profile auto\|8gb\|16gb` | model LLM i `num_ctx` (domyślnie wykrywany z VRAM) |
 | `--from-stage asr\|frames\|vlm\|llm` | zacznij od wskazanego etapu |
 | `--only-stage ...` | uruchom tylko jeden etap |
 | `--force` | wymuś ponowne wykonanie etapów |
-| `--status` | wypisz stan etapów i postęp jako JSON (nic nie uruchamia) |
+| `--status` | wypisz stan etapów jako JSON |
 
-Ctrl+C przerywa pracę bezpiecznie (model zostaje rozładowany); ponowne uruchomienie wznawia. Brak ścieżki audio w pliku: ASR jest pomijany, a notatki powstają tylko z tablicy.
-
-## Błędy Ollamy przy odczycie tablicy (HTTP 500)
-
-Błąd 500 zwykle oznacza, że proces modelu w Ollamie padł (brak VRAM/RAM, bardzo duży obraz, wyciek pamięci po wielu obrazach). Etap VLM jest na to odporny: treść błędu z Ollamy trafia do komunikatu, klatka jest ponawiana po odtworzeniu modelu i z coraz mniejszym obrazem (100%, 75%, 55% `vlm.max_side`), model jest profilaktycznie odświeżany co `vlm.reload_every` klatek, a pojedyncza klatka, której nie da się opisać, jest pomijana (do `vlm.max_failed_frames`, nie więcej niż 20% klatek; wykład kończy się wtedy normalnie, a lista pominiętych klatek jest w logu). Po 5 kolejnych błędach etap zatrzymuje się z komunikatem, żeby nie palić godzin na niedziałającej Ollamie, a gotowe klatki zostają (wznowienie je pomija). Parametry w `config.yaml` (`vlm`): `max_side`, `num_ctx`, `reload_every`, `frame_retries`, `max_failed_frames`. Jeśli problem wraca, zmniejsz `max_side` (np. do 1024) i sprawdź log Ollamy (`journalctl -u ollama` albo okno `ollama serve`).
-
-## Gdy serwer przestaje działać
-
-Każde zamknięcie serwera zostawia ślad: przyczyna w `work/server.log` (sygnał, auto-exit, przycisk „Zakończ”, wyjątek), a serwer co 10 s zapisuje stan (`work/server.state.json`: czas, pamięć procesu, wolna pamięć systemu). Jeśli poprzednie uruchomienie skończyło się nagle (zabicie procesu przez system przy braku pamięci, uśpienie lub zamknięcie WSL), po następnym starcie aplikacja pokazuje komunikat z czasem ostatniej aktywności i ostrzeżenie trafia do logu. Błędy fatalne procesu (np. awaria biblioteki natywnej) zapisują traceback do `work/server.crash.log`. Zadania przetwarzania działają w osobnych procesach, więc przeżywają zatrzymanie serwera, a ich błędy widać w „Szczegóły błędu i logi”.
-
-## Jakość notatek (pętle powtórzeń modelu)
-
-Mały model potrafi „zapętlić się” („relacji relacji relacji…”). Generator to wykrywa i naprawia: pętle w odpowiedzi powodują ponowienie z inną temperaturą, karą za powtórzenia i ziarnem (do 2 razy), a jeśli się nie uda, powtórzenia są wycinane. Nagłówki trafiające do kolejnych fragmentów, podsumowania i spisu treści są czyszczone, żeby pętla nie „zarażała” następnych fragmentów. Pętle w opisach VLM i w transkrypcji ASR są usuwane przed syntezą, a powtórzone sekcje z kolejnych fragmentów (ta sama definicja z tej samej planszy) są scalane. Jeśli fragmenty musiały być naprawione, zakładka Notatki pokazuje ostrzeżenie (`notes_meta.json`) z propozycją ponownej generacji. Parametry: `llm.repeat_penalty` i `llm.loop_retries` w `config.yaml`.
-
-## Eksport i import wykładów (`.lec`)
-
-Wykład można zapisać do pliku `.lec` i wczytać na innym komputerze lub w innej instalacji. `.lec` to **zwykłe archiwum ZIP** z innym rozszerzeniem (można je otworzyć dowolnym programem do ZIP). W archiwum są: `manifest.json` (tytuł, folder, uid, dane o filmie), a w `data/` transkrypt, klatki z tablicy, odczyt tablicy (VLM), notatki (wygenerowane, edytowane i historia wersji), rozmowy z czatu i stan etapów. Pomijane są logi i pliki tymczasowe. Plik wideo jest **opcjonalny** (domyślnie nie jest dołączany, bo waży gigabajty).
-
-- **Eksport:** link „Eksportuj” przy wykładzie (lista lub szczegóły) → okno z rozmiarem danych i opcją „Dołącz plik wideo” → pasek postępu → pobranie pliku. Eksport jest zablokowany, gdy wykład jest przetwarzany (żeby archiwum było spójne).
-- **Import:** przycisk „Importuj” na liście (albo przeciągnij plik `.lec` na stronę). Aplikacja najpierw sprawdza archiwum (integralność, bezpieczeństwo), pokazuje podsumowanie i pyta o opcje: dołączony film (zapisywany w `videos/` bez nadpisywania istniejących plików), miejsce w bibliotece (bieżący folder albo odtworzenie folderu z archiwum) oraz co zrobić, gdy ten sam wykład już istnieje (po stałym identyfikatorze `uid`): zaimportować jako kopię, zastąpić albo pominąć.
-- **Wykład bez filmu** działa normalnie (notatki, czat, materiały, wyszukiwarka, ponowna generacja notatek). Film wskażesz później przyciskiem „Wskaż plik wideo” w szczegółach (wyniki są wtedy uznawane za dotyczące tego filmu). Etapy czytające film (transkrypcja, klatki) wymagają pliku.
-- **Bezpieczeństwo:** archiwum z zewnątrz jest traktowane jak niezaufane. Odrzucane są ścieżki spoza katalogu wykładu, dowiązania symboliczne, wpisy zaszyfrowane, bomby kompresji, uszkodzone sumy kontrolne i niepoprawne pliki JSON; rozpakowywane są tylko znane pliki wykładu. Limit rozmiaru: `import.max_gb` w `config.yaml` (domyślnie 50 GB). Importowane wyniki są przenoszone „tak jak są” (stan etapów jest dopasowywany do bieżącej konfiguracji).
-
-## Wygląd
-
-Interfejs ma styl zeszytu akademickiego: papierowe tło, tusz i jeden czerwony akcent, krój szeryfowy dla treści (tytuły, notatki, czat), bezszeryfowy dla elementów interfejsu i monospace dla czasów. Jasny i ciemny motyw wybierają się według ustawień systemu. Czcionki (Source Serif 4, IBM Plex Sans, IBM Plex Mono; licencja SIL OFL, pliki w `ui/static/fonts/`) są wgrane lokalnie, więc aplikacja działa bez internetu. Ikony aplikacji generuje `python tools/make_icons.py`.
-
-## Logi i diagnostyka błędów
-
-- **W aplikacji:** przy błędzie przetwarzania film pokazuje przyczynę (np. brakujący model, brak bibliotek CUDA) wraz z wskazówką naprawy oraz przycisk „Szczegóły błędu i logi” (stderr procesu etapu, `pipeline.log`, wyjście zadania). Link „Logi” w nagłówku pokazuje log serwera.
-- **Pliki** (w `work/`): `server.log` (serwer i kolejka), a w `work/<film>/`: `pipeline.log` (przebieg etapów), `worker_<etap>.log` (stderr procesu etapu, w tym awarie bibliotek natywnych bez tracebacku Pythona), `job.out`, `worker_error.json`.
-- Wznawianie: etapy VLM i LLM po awarii zachowują checkpointy (opisy klatek, gotowe fragmenty notatek), więc ponowne uruchomienie nie zaczyna od zera, o ile konfiguracja i wejście się nie zmieniły.
+Ctrl+C przerywa bezpiecznie (model zostaje rozładowany); ponowne uruchomienie wznawia pracę.
 
 ## Konfiguracja
 
-Progi i modele są w `config.yaml`. Najczęściej trzeba dostroić sekcję `frames`, jeśli wybiera za dużo lub za mało klatek (np. `ink_level`, `erase_fraction`, `save_new_ink_px`, `max_hold_s`).
+Modele, progi i parametry są w `config.yaml`; serwer przeładowuje go sam po zmianie pliku, a wyniki wygenerowane wcześniej nie są przez to oznaczane jako nieaktualne. Po aktualizacji kodu zrestartuj serwer. Najczęściej dostraja się:
 
-## Testy
+- `frames` – gdy wybiera za dużo lub za mało klatek (`ink_level`, `erase_fraction`, `save_new_ink_px`, `max_hold_s`),
+- `vlm` – odporność odczytu tablicy (`max_side`, `num_ctx`, `reload_every`, `frame_retries`, `max_failed_frames`),
+- `llm`, `chat`, `quiz`, `import`.
+
+## Diagnostyka
+
+**Błędy przetwarzania.** Aplikacja pokazuje przyczynę z podpowiedzią naprawy oraz „Szczegóły błędu i logi”. Logi w `work/`: `server.log` (serwer i kolejka); w `work/<film>/`: `pipeline.log`, `worker_<etap>.log` (stderr etapu, także awarie bibliotek natywnych), `job.out`, `worker_error.json`. Etapy VLM i LLM zachowują punkty kontrolne, więc wznowienie nie zaczyna od zera.
+
+**HTTP 500 z Ollamy przy odczycie tablicy** zwykle oznacza upadek procesu modelu (brak VRAM/RAM, duży obraz). Etap VLM jest na to odporny: ponawia klatkę po odtworzeniu modelu i z mniejszym obrazem (100%, 75%, 55% `vlm.max_side`), odświeża model co `vlm.reload_every` klatek, a nieopisywalne klatki pomija (do `vlm.max_failed_frames` i 20% klatek). Po 5 kolejnych błędach etap zatrzymuje się z komunikatem. Gdy problem wraca, zmniejsz `max_side` (np. 1024) i sprawdź log Ollamy (`journalctl -u ollama`).
+
+**Serwer przestał działać.** Każde zamknięcie zostawia ślad w `work/server.log` (sygnał, auto-exit, „Zakończ”, wyjątek), a co 10 s zapisywany jest stan w `work/server.state.json`. Po nagłym zakończeniu (np. zabicie procesu przy braku pamięci, uśpienie lub zamknięcie WSL) aplikacja po starcie pokazuje komunikat z czasem ostatniej aktywności. Awarie natywne zapisują traceback do `work/server.crash.log`. Zadania przetwarzania działają w osobnych procesach, więc przeżywają restart serwera.
+
+## Testy i status
 
 ```bash
 pytest -q tests
 ```
 
-Nie wymagają GPU ani Ollamy (używają atrap), działają także na macOS.
+Testy nie wymagają GPU ani Ollamy (używają atrap) i działają także na macOS.
 
-## Status
+Sprawdzone na prawdziwym nagraniu: wykrywanie tablicy, kolejka, interfejs, czat. **Niesprawdzone na docelowym sprzęcie:** ASR, VLM i LLM na GPU, `start.bat`, instalacja PWA, druk do PDF, jakość pytań quizów. Jakość odczytu pisma odręcznego i polskich notatek zależy od modeli. Plan i znane ryzyka: `PLAN_IMPLEMENTACJI.md`, `PLAN_UI.md`.
 
-Sprawdzone na prawdziwym nagraniu: wykrywanie tablicy (Etap 2), kolejka, interfejs i czat (w tym anulowanie na prawdziwej Ollamie). **Niesprawdzone na docelowym sprzęcie:** ASR, VLM i LLM na GPU, `start.bat`, service worker/instalacja PWA, druk do PDF. Jakość odczytu pisma odręcznego i polskich notatek zależy od modeli. Plan i znane ryzyka: `PLAN_IMPLEMENTACJI.md`, `PLAN_UI.md`.
+Interfejs ma styl zeszytu akademickiego (jasny i ciemny motyw według systemu); czcionki Source Serif 4, IBM Plex Sans i IBM Plex Mono (licencja SIL OFL) są wgrane lokalnie, więc aplikacja działa offline. Ikony generuje `python tools/make_icons.py`.
