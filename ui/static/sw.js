@@ -1,6 +1,7 @@
 // Service worker: powłoka aplikacji z cache (działa też, gdy serwer jest wyłączony). API nigdy nie jest cache'owane.
-const CACHE = "lecturenoter-v1";
-const SHELL = ["/", "/app.js", "/app.css", "/manifest.webmanifest", "/favicon.svg",
+const CACHE = "lecturenoter-v2";
+const SHELL = ["/", "/app.js", "/notes.js", "/app.css", "/vendor/marked.min.js", "/vendor/purify.min.js",
+               "/vendor/katex/katex.min.js", "/vendor/katex/katex.min.css", "/manifest.webmanifest", "/favicon.svg",
                "/icons/icon-192.png", "/icons/icon-512.png"];
 
 self.addEventListener("install", (e) => {

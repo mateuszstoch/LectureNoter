@@ -286,3 +286,102 @@ def test_static_frontend_served_and_api_not_shadowed(client):
     assert c.get("/icons/icon-512.png").headers["content-type"] == "image/png"
     assert c.get("/api/health").json() == {"ok": True}
     assert c.get("/nie-ma-takiego-pliku").status_code == 404
+
+
+# ---------- notatki i materialy ----------
+@pytest.fixture
+def notes_env(client, env):
+    c, jm = client
+    c.post("/api/videos", json={"files": ["ok.mp4"], "enqueue": False})
+    return c, env[0].workdir("ok")
+
+
+def test_notes_missing_then_generated_edit_history_revert(notes_env):
+    c, wd = notes_env
+    assert c.get("/api/videos/ok/notes").status_code == 404
+    (wd / "lecture_notes.md").write_text("# Wygenerowane\n\n$x^2$", encoding="utf-8")
+    r = c.get("/api/videos/ok/notes").json()
+    assert r["source"] == "generated" and not r["has_edited"] and "Wygenerowane" in r["md"]
+    r = c.put("/api/videos/ok/notes", json={"md": "# Moje v1"}).json()
+    assert r["source"] == "edited" and r["has_generated"]
+    assert c.get("/api/videos/ok/notes/versions").json() == []  # pierwszy zapis nic nie archiwizuje
+    c.put("/api/videos/ok/notes", json={"md": "# Moje v2"})
+    vs = c.get("/api/videos/ok/notes/versions").json()
+    assert len(vs) == 1 and c.get(f"/api/videos/ok/notes/versions/{vs[0]['id']}").json()["md"] == "# Moje v1"
+    r = c.delete("/api/videos/ok/notes/edited").json()
+    assert r["source"] == "generated" and "Wygenerowane" in r["md"]
+    assert len(c.get("/api/videos/ok/notes/versions").json()) == 2  # v2 zarchiwizowana przy powrocie
+    assert (wd / "lecture_notes.md").read_text(encoding="utf-8").startswith("# Wygenerowane")  # nietknieta
+
+
+def test_notes_validation(notes_env):
+    c, wd = notes_env
+    (wd / "lecture_notes.md").write_text("x", encoding="utf-8")
+    assert c.put("/api/videos/ok/notes", json={"md": "   "}).status_code == 400
+    assert c.put("/api/videos/ok/notes", json={"md": "a" * 2_100_000}).status_code == 400
+    assert c.delete("/api/videos/ok/notes/edited").status_code == 400  # nie ma edytowanej
+    for bad in ("abc", "20240101-000000%2F..%2Fx", "..%2F..%2Fmeta"):
+        assert c.get(f"/api/videos/ok/notes/versions/{bad}").status_code in (400, 404)
+    assert c.get("/api/videos/ok/notes/versions/20240101-000000").status_code == 400
+
+
+def test_history_limited_to_max(notes_env, monkeypatch):
+    c, wd = notes_env
+    from ui import notes as nm
+    monkeypatch.setattr(nm, "MAX_VERSIONS", 3)
+    (wd / "lecture_notes.md").write_text("g", encoding="utf-8")
+    for i in range(8):
+        c.put("/api/videos/ok/notes", json={"md": f"v{i}"})
+    assert len(c.get("/api/videos/ok/notes/versions").json()) == 3
+
+
+def test_export_md_and_docx(notes_env, monkeypatch):
+    import shutil
+    c, wd = notes_env
+    (wd / "lecture_notes.md").write_text("# Tytul\n\nWzor: $a^2+b^2=c^2$\n", encoding="utf-8")
+    r = c.get("/api/videos/ok/notes/export?format=md")
+    assert r.status_code == 200 and "attachment" in r.headers["content-disposition"] and "Tytul" in r.text
+    if shutil.which("pandoc"):
+        d = c.get("/api/videos/ok/notes/export?format=docx")
+        assert d.status_code == 200 and d.content[:2] == b"PK"
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    assert c.get("/api/videos/ok/notes/export?format=docx").status_code == 501
+    assert c.get("/api/videos/ok/notes/export?format=pdf").status_code == 400
+
+
+def test_materials_and_context(notes_env):
+    c, wd = notes_env
+    (wd / "frames").mkdir()
+    (wd / "frames" / "frame_000010_t00020.jpg").write_bytes(b"\xff\xd8jpg")
+    (wd / "frames" / "frame_000050_t00100.jpg").write_bytes(b"\xff\xd8jpg2")
+    (wd / "frames_metadata.json").write_text(json.dumps([
+        {"file": "frame_000010_t00020.jpg", "timestamp": 20.0, "index": 10},
+        {"file": "frame_000050_t00100.jpg", "timestamp": 100.0, "index": 50}]))
+    (wd / "vision_context.json").write_text(json.dumps([{"file": "frame_000010_t00020.jpg", "timestamp": 20.0, "text": "Plansza A"}]))
+    (wd / "transcript.json").write_text(json.dumps([
+        {"start": 0, "end": 5, "text": "wstep"}, {"start": 60, "end": 70, "text": "srodek"}, {"start": 300, "end": 310, "text": "koniec"}]))
+    fr = c.get("/api/videos/ok/frames").json()
+    assert [f["text"] for f in fr] == ["Plansza A", None]
+    assert c.get("/api/videos/ok/frames/frame_000010_t00020.jpg").content == b"\xff\xd8jpg"
+    for bad in ("../meta.json", "..%2Fmeta.json", "evil.jpg", "frame_1_t1.png"):
+        assert c.get(f"/api/videos/ok/frames/{bad}").status_code == 404
+    ctx = c.get("/api/videos/ok/context", params={"t": 50}).json()
+    assert ctx["frame"]["file"] == "frame_000050_t00100.jpg"  # tablica widoczna o t=50 to stan zapisany o 100
+    assert [s["text"] for s in ctx["transcript"]] == ["wstep", "srodek"]  # okno +/-60 s
+    assert c.get("/api/videos/ok/context", params={"t": 5}).json()["frame"]["file"] == "frame_000010_t00020.jpg"
+    assert c.get("/api/videos/ok/context", params={"t": 9999}).json()["frame"]["file"] == "frame_000050_t00100.jpg"
+    assert len(c.get("/api/videos/ok/transcript").json()) == 3
+
+
+def test_regeneration_keeps_edited_notes(notes_env, env):
+    c, wd = notes_env
+    (wd / "lecture_notes.md").write_text("g", encoding="utf-8")
+    c.put("/api/videos/ok/notes", json={"md": "moje"})
+    o = env[0].orchestrator("ok")
+    o.invalidate("llm")  # regeneracja kasuje wygenerowana, ale nie edytowana
+    assert not (wd / "lecture_notes.md").exists() and (wd / "lecture_notes.edited.md").read_text(encoding="utf-8") == "moje"
+    assert c.get("/api/videos/ok/notes").json()["source"] == "edited"
+    (wd / "stage_state.json").write_text(json.dumps({"llm": {"status": "done", "config": "x", "input": "x", "seconds": 1}}))
+    (wd / "lecture_notes.md").write_text("g", encoding="utf-8")
+    imp = c.get("/api/videos/ok/impact", params={"stage": "llm"}).json()
+    assert imp["keeps_edited_notes"] is True

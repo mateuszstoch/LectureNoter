@@ -5,11 +5,14 @@ import json
 from pathlib import Path
 
 import contextlib
+import shutil
+import subprocess
+import tempfile
 
 import uvicorn
 import yaml
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -17,6 +20,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from gpu_lock import GpuLock
 from main import STAGES
 from ollama_client import OllamaClient, pick_profile, total_vram_gb, vram_used_gb
+from ui import materials, notes as notes_mod
 from ui.jobs import JobError, JobManager
 from ui.library import Library, LibraryError
 
@@ -43,6 +47,10 @@ class RunRequest(BaseModel):
     from_stage: str | None = None
     only_stage: str | None = None
     force: bool = False
+
+
+class NotesBody(BaseModel):
+    md: str
 
 
 class MoveRequest(BaseModel):
@@ -102,6 +110,7 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
         except Exception:
             pass
         return {"ollama": ollama, "gpu_holder": gpu.holder(), "profile": pick_profile(cfg),
+                "pandoc": bool(shutil.which("pandoc")),
                 "paths": {"videos_dir": str(lib.videos_dir.resolve()), "work_dir": str(lib.work_dir.resolve())},
                 "vram": {"total_gb": total_vram_gb(), "used_gb": vram_used_gb()},
                 "models": {"vlm": cfg["vlm"]["model"],
@@ -138,7 +147,9 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
     def impact(vid: str, stage: str):
         if stage not in STAGES:
             raise HTTPException(400, "nieznany etap")
-        return {"stage": stage, "removes": guard(lambda: lib.impact(vid, stage))}
+        removes = guard(lambda: lib.impact(vid, stage))
+        edited = (lib.workdir(vid) / notes_mod.EDITED).exists()
+        return {"stage": stage, "removes": removes, "keeps_edited_notes": edited and "llm" in removes}
 
     @app.post("/api/videos/{vid}/run")
     def run(vid: str, req: RunRequest):
@@ -166,6 +177,78 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
     def move(job_id: str, req: MoveRequest):
         guard(lambda: jm.move(job_id, req.position))
         return jm.snapshot()
+
+    # --- notatki ---
+    def wd_of(vid):
+        return guard(lambda: lib.workdir(vid))
+
+    def notes_guard(fn):
+        try:
+            return fn()
+        except notes_mod.NotesMissing as e:
+            raise HTTPException(404, str(e))
+        except notes_mod.NotesError as e:
+            raise HTTPException(400, str(e))
+
+    @app.get("/api/videos/{vid}/notes")
+    def get_notes(vid: str):
+        return notes_guard(lambda: notes_mod.get_active(wd_of(vid)))
+
+    @app.put("/api/videos/{vid}/notes")
+    def put_notes(vid: str, body: NotesBody):
+        return notes_guard(lambda: notes_mod.save_edited(wd_of(vid), body.md))
+
+    @app.delete("/api/videos/{vid}/notes/edited")
+    def revert_notes(vid: str):
+        return notes_guard(lambda: notes_mod.revert_edited(wd_of(vid)))
+
+    @app.get("/api/videos/{vid}/notes/versions")
+    def versions(vid: str):
+        return notes_mod.list_versions(wd_of(vid))
+
+    @app.get("/api/videos/{vid}/notes/versions/{ver}")
+    def version(vid: str, ver: str):
+        return {"id": ver, "md": notes_guard(lambda: notes_mod.read_version(wd_of(vid), ver))}
+
+    @app.get("/api/videos/{vid}/notes/export")
+    def export(vid: str, format: str = "md"):
+        data = notes_guard(lambda: notes_mod.get_active(wd_of(vid)))
+        if format == "md":
+            return Response(data["md"], media_type="text/markdown; charset=utf-8",
+                            headers={"Content-Disposition": f'attachment; filename="{vid}.md"'})
+        if format == "docx":
+            if not shutil.which("pandoc"):
+                raise HTTPException(501, "Eksport do Worda wymaga programu pandoc (np. sudo apt install pandoc).")
+            with tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp) / "notes.docx"
+                r = subprocess.run(["pandoc", "-f", "markdown+tex_math_dollars", "-t", "docx", "-o", str(out)],
+                                   input=data["md"].encode("utf-8"), capture_output=True)
+                if r.returncode != 0:
+                    raise HTTPException(500, f"pandoc: {r.stderr.decode('utf-8', 'replace')[:300]}")
+                return Response(out.read_bytes(),
+                                media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                headers={"Content-Disposition": f'attachment; filename="{vid}.docx"'})
+        raise HTTPException(400, "format: md lub docx (PDF: drukowanie z przegladarki)")
+
+    # --- materialy zrodlowe ---
+    @app.get("/api/videos/{vid}/transcript")
+    def get_transcript(vid: str):
+        return materials.transcript(wd_of(vid))
+
+    @app.get("/api/videos/{vid}/frames")
+    def get_frames(vid: str):
+        return materials.frames(wd_of(vid))
+
+    @app.get("/api/videos/{vid}/frames/{name}")
+    def get_frame(vid: str, name: str):
+        p = materials.frame_path(wd_of(vid), name)
+        if not p:
+            raise HTTPException(404, "nie ma takiej klatki")
+        return FileResponse(p, media_type="image/jpeg")
+
+    @app.get("/api/videos/{vid}/context")
+    def get_context(vid: str, t: float):
+        return materials.context_at(wd_of(vid), t)
 
     def build_state():
         return {"queue": jm.snapshot(), "videos": lib.list_videos(), "gpu_holder": gpu.holder()}

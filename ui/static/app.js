@@ -263,19 +263,29 @@ let detailId = null;
 
 function stopLogs() { if (logSource) { logSource.close(); logSource = null; } }
 
-function mountDetail(id) {
+let detailTab = "process";
+
+function mountDetail(id, tab) {
   detailId = id;
+  detailTab = tab;
+  activeTab = null;
   stopLogs();
   const view = $("#view");
-  const logs = h("pre", { class: "logs", id: "logbox" }, "");
-  const tabs = h("div", { class: "tabs", role: "tablist" },
-    h("button", { role: "tab", "aria-selected": "true" }, "Przetwarzanie"),
-    h("button", { role: "tab", disabled: true, title: "Dostępne w kolejnej fazie" }, "Notatki"),
-    h("button", { role: "tab", disabled: true, title: "Dostępne w kolejnej fazie" }, "Czat"));
-  view.replaceChildren(
-    h("div", { id: "dhead" }), tabs, h("div", { id: "dstages" }),
-    h("details", { class: "card", style: "margin-top:12px", ontoggle: (e) => { if (e.target.open) startLogs(id); else stopLogs(); } },
-      h("summary", {}, "Logi"), logs));
+  const tabBtn = (key, label) => h("a", { class: "tab", role: "tab", href: `#/video/${id}${key === "process" ? "" : "/" + key}`, "aria-selected": String(tab === key) }, label);
+  const tabs = h("div", { class: "tabs", role: "tablist" }, tabBtn("process", "Przetwarzanie"), tabBtn("notes", "Notatki"),
+    tabBtn("materials", "Materiały"), h("span", { class: "tab disabled", title: "Dostępne w kolejnej fazie" }, "Czat"));
+  const content = h("div", { id: "dtab" });
+  view.replaceChildren(h("div", { id: "dhead" }), tabs, content);
+  if (tab === "process") {
+    const logs = h("pre", { class: "logs", id: "logbox" }, "");
+    content.replaceChildren(h("div", { id: "dstages" }),
+      h("details", { class: "card", style: "margin-top:12px", ontoggle: (e) => { if (e.target.open) startLogs(id); else stopLogs(); } },
+        h("summary", {}, "Logi"), logs));
+  } else if (tab === "notes") {
+    mountNotesTab(content, id);
+  } else if (tab === "materials") {
+    mountMaterialsTab(content, id);
+  }
   updateDetail();
 }
 
@@ -297,8 +307,11 @@ async function runVideo(id, body) {
 }
 
 async function openRegenDialog(v, stage) {
-  let removes = [];
-  try { removes = (await api(`/api/videos/${v.id}/impact?stage=${stage}`)).removes; } catch (_) { /* pokaż bez listy */ }
+  let removes = [], keepsEdited = false;
+  try {
+    const imp = await api(`/api/videos/${v.id}/impact?stage=${stage}`);
+    removes = imp.removes; keepsEdited = imp.keeps_edited_notes;
+  } catch (_) { /* pokaż bez listy */ }
   const only = h("input", { type: "radio", name: "scope", value: "only", checked: true });
   const after = h("input", { type: "radio", name: "scope", value: "after" });
   const warn = h("div", { class: "small", style: "margin-top:10px;color:var(--warn)" });
@@ -312,6 +325,7 @@ async function openRegenDialog(v, stage) {
     h("label", { class: "row" }, only, "Tylko ten etap"),
     h("label", { class: "row" }, after, "Ten etap i wszystkie następne"),
     warn,
+    keepsEdited ? h("div", { class: "small muted", style: "margin-top:6px" }, "Edytowana wersja notatek zostanie zachowana (regeneracja zastąpi tylko wersję wygenerowaną).") : null,
     h("div", { class: "actions" }, h("button", { onclick: closeDialog }, "Anuluj"),
       h("button", { class: "primary", onclick: async () => {
         closeDialog();
@@ -330,12 +344,13 @@ function updateDetail() {
   if (!detailId) return;
   const v = videoById(detailId);
   const head = $("#dhead"), stages = $("#dstages");
-  if (!head || !stages) return;
+  if (!head) return;
   if (!v) {
     head.replaceChildren(h("a", { href: "#/" }, "← Wróć"), h("h1", {}, state.loaded ? "Nie znaleziono filmu" : "Ładowanie…"));
-    stages.replaceChildren();
+    if (stages) stages.replaceChildren();
     return;
   }
+  if (activeTab) activeTab.onState(v);
   const job = activeJob(v.id);
   const resumable = ["error", "cancelled", "interrupted", "stale"].includes(v.overall)
     || Object.values(v.stages).some((s) => ["stale", "pending"].includes(s.status) && v.overall !== "running");
@@ -351,6 +366,7 @@ function updateDetail() {
     !v.video_exists ? h("div", { class: "banner", style: "margin:10px 0 0" }, `Plik wideo nie istnieje: ${v.video_path}`) : null,
     v.error && v.overall === "error" ? h("div", { class: "banner", style: "margin:10px 0 0" }, `Błąd: ${v.error}`) : null,
     v.overall === "interrupted" ? h("div", { class: "banner warn", style: "margin:10px 0 0" }, "Poprzednie uruchomienie zostało przerwane (np. wyłączenie WSL). Wznów, aby kontynuować od ostatniego checkpointu.") : null));
+  if (!stages) return;
   stages.replaceChildren(h("div", { class: "card" }, STAGES.map((s) => {
     const st = v.stages[s];
     const showBar = st.progress && (st.status === "running" || st.status === "interrupted" || st.status === "cancelled" || st.status === "error");
@@ -365,12 +381,19 @@ function updateDetail() {
 
 // ---------- routing i dane ----------
 function route() {
-  const m = location.hash.match(/^#\/video\/([a-z0-9_-]+)/);
+  const m = location.hash.match(/^#\/video\/([a-z0-9_-]+)(?:\/(notes|materials))?/);
   if (m) {
-    if (detailId !== m[1] || !$("#dhead")) mountDetail(m[1]);
-    else updateDetail();
+    const tab = m[2] || "process";
+    if (detailId !== m[1] || detailTab !== tab || !$("#dhead")) {
+      if (activeTab && activeTab.dirty() && !confirm("Masz niezapisane zmiany w notatkach. Opuścić stronę?")) {
+        history.back();
+        return;
+      }
+      mountDetail(m[1], tab);
+    } else updateDetail();
   } else {
     detailId = null;
+    activeTab = null;
     stopLogs();
     renderLibrary();
   }
