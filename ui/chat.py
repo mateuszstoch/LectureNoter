@@ -5,6 +5,8 @@ import time
 import uuid
 from pathlib import Path
 
+from loguru import logger
+
 from io_utils import atomic_write_json, read_json
 from llm_synthesis import est_tokens
 from ollama_client import OllamaError
@@ -272,6 +274,7 @@ class ChatService:
             stopped = bool(cancel is not None and cancel.is_set())
         except (OllamaError, ChatError) as e:
             failed = str(e)
+            logger.warning(f"czat ({video_id}/{chat_id}): {failed}")
         except GeneratorExit:
             raise
         finally:

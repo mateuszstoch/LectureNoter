@@ -1,5 +1,6 @@
 """LectureNoter: orkiestrator pipeline'u (ASR -> slajdy -> VLM -> LLM) z wznawianiem, statusem i anulowaniem."""
 import argparse
+import collections
 import hashlib
 import json
 import os
@@ -7,12 +8,14 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 import yaml
 from loguru import logger
 
+from diagnostics import describe_failure
 from gpu_lock import GpuLock
 from io_utils import atomic_write_json, read_json
 from ollama_client import OllamaClient, OllamaError, pick_profile, vram_used_gb
@@ -26,6 +29,7 @@ OUTPUTS = {"asr": ["transcript.json"], "frames": ["frames_metadata.json"],
 # artefakty posrednie do usuniecia, gdy etap jest nieaktualny
 LEFTOVERS = {"asr": ["audio.wav"], "frames": ["frames"], "vlm": ["vision_context.jsonl"], "llm": ["chunks"]}
 GPU_STAGES = {"asr", "vlm", "llm"}
+RESUMABLE = {"vlm", "llm"}  # etapy z checkpointami (vision_context.jsonl, chunks/) wznawianymi po awarii
 
 
 class Cancelled(Exception):
@@ -145,6 +149,22 @@ class PipelineOrchestrator:
                              "input": self.input_sig(stage), "seconds": round(seconds, 1)}
         atomic_write_json(str(self.state_path), self.state)
 
+    def _prepare_stage(self, stage, force):
+        """Przed uruchomieniem etapu: pelne czyszczenie, chyba ze to wznowienie przerwanego etapu o tej samej
+        konfiguracji i wejsciu (wtedy zostaja checkpointy, a usuwamy tylko ewentualne pliki wynikowe)."""
+        path = self.workdir / "checkpoints.json"
+        cp = read_json(path, {}) or {}
+        cur = {"config": self.config_sig(stage), "input": self.input_sig(stage)}
+        if not force and stage in RESUMABLE and cp.get(stage) == cur:
+            logger.info(f"[{stage}] wznawiam od checkpointu")
+            for name in OUTPUTS[stage]:
+                (self.workdir / name).unlink(missing_ok=True)
+            self.state.pop(stage, None)
+        else:
+            self.invalidate(stage)
+        cp[stage] = cur
+        atomic_write_json(str(path), cp)
+
     def invalidate(self, stage):
         for name in OUTPUTS[stage] + LEFTOVERS[stage]:
             p = self.workdir / name
@@ -199,20 +219,45 @@ class PipelineOrchestrator:
             rep.update(min(done, total), total, msg)
         frames_module.extract_frames(self.video, self.workdir, self.cfg["frames"], progress=cb)
 
+    def _worker_cmd(self, stage):
+        return [sys.executable, str(Path(__file__).resolve()), "--worker", stage, str(self.video),
+                "--workdir", str(self.workdir), "--language", self.language, "--profile", self.profile]
+
     def _run_worker(self, stage):
-        """Etapy GPU w osobnym podprocesie: VRAM zwalnia sie po zakonczeniu procesu."""
-        cmd = [sys.executable, str(Path(__file__).resolve()), "--worker", stage, str(self.video),
-               "--workdir", str(self.workdir), "--language", self.language, "--profile", self.profile]
-        self.proc = subprocess.Popen(cmd, env=cuda_lib_env())
+        """Etapy GPU w osobnym podprocesie: VRAM zwalnia sie po zakonczeniu procesu.
+        stderr podprocesu jest przechwytywany (do worker_<etap>.log i do komunikatu bledu), bo awarie bibliotek
+        natywnych (np. brak libcublas) konczą proces bez tracebacku Pythona."""
+        err_json = self.workdir / "worker_error.json"
+        err_json.unlink(missing_ok=True)
+        log_path = self.workdir / f"worker_{stage}.log"
+        tail = collections.deque(maxlen=60)
+        self.proc = subprocess.Popen(self._worker_cmd(stage), env=cuda_lib_env(), stderr=subprocess.PIPE,
+                                     text=True, errors="replace", bufsize=1)
+        proc = self.proc
+
+        def pump():
+            with open(log_path, "w", encoding="utf-8") as f:
+                for line in proc.stderr:
+                    sys.stderr.write(line)
+                    f.write(line)
+                    f.flush()
+                    tail.append(line.rstrip("\n"))
+        t = threading.Thread(target=pump, daemon=True)
+        t.start()
         try:
-            rc = self.proc.wait()
+            rc = proc.wait()
         except BaseException:  # tez Cancelled: zatrzymaj podproces (jego handler SIGTERM rozladuje model)
             self._stop_child()
             raise
         finally:
+            t.join(timeout=5)
             self.proc = None
         if rc != 0:
-            raise RuntimeError(f"etap {stage} zakonczyl sie kodem {rc}")
+            msg = describe_failure(stage, rc, read_json(err_json), list(tail))
+            logger.error(f"[{stage}] {msg}")
+            if tail:
+                logger.error(f"[{stage}] ostatnie linie stderr procesu:\n" + "\n".join(tail))
+            raise RuntimeError(msg)
 
     def _stop_child(self, timeout=20):
         p = self.proc
@@ -259,7 +304,7 @@ class PipelineOrchestrator:
                 if not force and self.is_done(stage):
                     logger.info(f"[{stage}] pomijam (wynik aktualny)")
                     continue
-                self.invalidate(stage)
+                self._prepare_stage(stage, force)
                 write_run_state(self.workdir, current_stage=stage)
                 if stage == "asr" and not self.detect_audio():
                     logger.warning("[asr] brak sciezki audio: pomijam, notatki powstana tylko z tablicy")
@@ -281,7 +326,9 @@ class PipelineOrchestrator:
             logger.warning(f"[{stage}] anulowano")
             raise
         except Exception as e:
-            write_run_state(self.workdir, status="error", error=str(e), finished=time.time())
+            if not isinstance(e, RuntimeError):  # RuntimeError z workera juz zalogowany z przyczyna
+                logger.exception(f"[{stage}] nieobsluzony wyjatek")
+            write_run_state(self.workdir, status="error", error=str(e), error_stage=stage, finished=time.time())
             raise
         finally:
             hb.stop()
@@ -311,6 +358,11 @@ def worker(stage, args, cfg):
             run_synthesis(args.workdir, cfg["llm"], prof["llm_model"], prof["num_ctx"], progress=rep)
     except Cancelled:
         sys.exit(143)
+    except Exception as e:  # pelny traceback do pipeline.log, jednolinijkowa przyczyna do worker_error.json
+        logger.exception(f"[{stage}] blad etapu")
+        atomic_write_json(str(Path(args.workdir) / "worker_error.json"),
+                          {"stage": stage, "type": type(e).__name__, "message": str(e)[:1000]})
+        sys.exit(1)
 
 
 def main():

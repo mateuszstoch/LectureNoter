@@ -7,7 +7,7 @@ import cv2
 from loguru import logger
 
 from io_utils import atomic_write_json, fmt_ts
-from ollama_client import OllamaClient
+from ollama_client import OllamaClient, OllamaError
 
 PROMPT = ("Extract all text, mathematical formulas, and code from this slide. "
           "Describe any charts or diagrams concisely. The content is a handwritten or typed whiteboard/slide "
@@ -54,6 +54,7 @@ def run_vlm(workdir, cfg, client=None, progress=None):
                 if "error" not in r:
                     done[r["file"]] = r
     todo = [m for m in meta if m["file"] not in done]
+    last_error = None
     logger.info(f"VLM: {len(meta)} klatek, do zrobienia {len(todo)}")
     if progress:
         progress.update(len(done), len(meta), "opis klatek")
@@ -72,9 +73,12 @@ def run_vlm(workdir, cfg, client=None, progress=None):
                         keep_alive=cfg["keep_alive"])
                     rec["text"] = clean_repetitions(text)
                     done[m["file"]] = rec
-                except Exception as e:  # jedna klatka nie zatrzymuje etapu
+                except Exception as e:
                     logger.error(f"VLM blad dla {m['file']}: {e}")
                     rec["error"] = str(e)
+                    last_error = str(e)
+                    if isinstance(e, OllamaError) and ("niedostepn" in str(e) or "blad polaczenia" in str(e)):
+                        raise  # brak modelu albo Ollamy: dalsze klatki tez padna, nie mielimy ich po kolei
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 f.flush()
                 if progress:
@@ -87,7 +91,8 @@ def run_vlm(workdir, cfg, client=None, progress=None):
                 logger.error(f"nie udalo sie rozladowac {cfg['model']}: {e}")
     result = [done[m["file"]] for m in meta if m["file"] in done]
     failed = len(meta) - len(result)
-    if failed:
-        logger.warning(f"VLM: {failed} klatek bez opisu (uruchom ponownie, aby ponowic)")
+    if failed:  # nie oznaczamy etapu jako gotowego: wyniki zostaja w checkpoincie, ponowne uruchomienie dokonczy brakujace
+        raise RuntimeError(f"VLM: {failed} z {len(meta)} klatek bez opisu (ostatni blad: {last_error}). "
+                           "Uruchom ponownie: gotowe klatki zostana pominiete.")
     atomic_write_json(str(workdir / "vision_context.json"), result)
     return result

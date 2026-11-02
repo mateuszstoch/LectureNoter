@@ -12,6 +12,9 @@ import requests
 from loguru import logger
 
 
+_warned_no_vram = False
+
+
 class OllamaError(RuntimeError):
     pass
 
@@ -175,7 +178,10 @@ def pick_profile(cfg, requested="auto"):
         return requested
     gb = total_vram_gb()
     if gb is None:
-        logger.warning("nie wykryto VRAM, wybieram profil 8gb")
+        global _warned_no_vram
+        if not _warned_no_vram:  # ta funkcja jest wolana przy kazdym odswiezeniu stanu: ostrzegaj raz
+            logger.warning("nie wykryto VRAM (brak NVML/GPU), wybieram profil 8gb")
+            _warned_no_vram = True
         return "8gb"
     return "16gb" if gb >= 14 else "8gb"
 

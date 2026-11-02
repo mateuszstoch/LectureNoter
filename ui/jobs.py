@@ -8,6 +8,8 @@ import time
 import uuid
 from pathlib import Path
 
+from loguru import logger
+
 from io_utils import atomic_write_json, read_json
 from main import STAGES
 from run_state import is_live, pid_alive, read_run_state
@@ -154,6 +156,8 @@ class JobManager:
         if status == "error" and not err:
             err = f"proces zakonczyl sie kodem {rc}" if rc is not None else "blad"
         job.update(status=status, finished=time.time(), error=err)
+        (logger.error if status == "error" else logger.info)(
+            f"zadanie {job['id']} ({job['video_id']}) zakonczone: {status}" + (f": {err}" if err else ""))
 
     def tick(self):
         """Jeden krok harmonogramu: obsluz zakonczenie biezacego zadania, ewentualnie uruchom nastepne."""
@@ -197,7 +201,9 @@ class JobManager:
                                           stdin=subprocess.DEVNULL, start_new_session=True)
             out.close()
             job.update(status="running", started=time.time(), pid=self._proc.pid)
+            logger.info(f"zadanie {job['id']} ({job['video_id']}) start, pid {self._proc.pid}")
         except Exception as e:
+            logger.exception(f"zadanie {job['id']}: nie udalo sie uruchomic")
             job.update(status="error", finished=time.time(), error=f"nie udalo sie uruchomic: {e}")
         self._save()
 
@@ -207,7 +213,7 @@ class JobManager:
                 try:
                     self.tick()
                 except Exception as e:  # petla nie moze zginac
-                    print(f"JobManager: {e}", file=sys.stderr)
+                    logger.exception(f"JobManager: blad petli harmonogramu: {e}")
         self._thread = threading.Thread(target=loop, daemon=True)
         self._thread.start()
 

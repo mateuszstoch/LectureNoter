@@ -95,6 +95,12 @@ python main.py wyklad.mp4
 
 Ctrl+C przerywa pracę bezpiecznie (model zostaje rozładowany); ponowne uruchomienie wznawia. Brak ścieżki audio w pliku: ASR jest pomijany, a notatki powstają tylko z tablicy.
 
+## Logi i diagnostyka błędów
+
+- **W aplikacji:** przy błędzie przetwarzania film pokazuje przyczynę (np. brakujący model, brak bibliotek CUDA) wraz z wskazówką naprawy oraz przycisk „Szczegóły błędu i logi” (stderr procesu etapu, `pipeline.log`, wyjście zadania). Link „Logi” w nagłówku pokazuje log serwera.
+- **Pliki** (w `work/`): `server.log` (serwer i kolejka), a w `work/<film>/`: `pipeline.log` (przebieg etapów), `worker_<etap>.log` (stderr procesu etapu, w tym awarie bibliotek natywnych bez tracebacku Pythona), `job.out`, `worker_error.json`.
+- Wznawianie: etapy VLM i LLM po awarii zachowują checkpointy (opisy klatek, gotowe fragmenty notatek), więc ponowne uruchomienie nie zaczyna od zera, o ile konfiguracja i wejście się nie zmieniły.
+
 ## Konfiguracja
 
 Progi i modele są w `config.yaml`. Najczęściej trzeba dostroić sekcję `frames`, jeśli wybiera za dużo lub za mało klatek (np. `ink_level`, `erase_fraction`, `save_new_ink_px`, `max_hold_s`).

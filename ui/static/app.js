@@ -335,6 +335,22 @@ async function openRegenDialog(v, stage) {
       } }, "Regeneruj")));
 }
 
+async function openDiagnostics(videoId) {
+  const body = h("div", { class: "muted" }, "Ładowanie…");
+  openDialog(h("h2", {}, "Szczegóły błędu"), body, h("div", { class: "actions" }, h("button", { onclick: closeDialog }, "Zamknij")));
+  let d;
+  try { d = await api(`/api/videos/${videoId}/diagnostics`); } catch (e) { body.textContent = e.message; return; }
+  const block = (title, lines) => (lines && lines.length ? h("details", { open: title.startsWith("Log procesu") }, h("summary", { class: "small" }, title),
+    h("pre", { class: "logs" }, lines.join("\n"))) : null);
+  body.replaceChildren(...kids(
+    h("div", { class: "small muted" }, `Etap: ${d.stage ? STAGE_NAME[d.stage] || d.stage : "?"} · stan: ${d.status || "?"}`),
+    d.error ? h("p", { style: "color:var(--err);overflow-wrap:anywhere" }, d.error) : null,
+    d.hint ? h("div", { class: "banner warn", style: "margin:8px 0" }, `Wskazówka: ${d.hint}`) : null,
+    block("Log procesu etapu (stderr)", d.worker_log), block("Log przetwarzania (pipeline.log)", d.pipeline_log), block("Wyjście zadania (job.out)", d.job_output),
+    !d.worker_log.length && !d.pipeline_log.length && !d.job_output.length ? h("div", { class: "muted small" }, "Brak zapisanych logów.") : null));
+  body.querySelectorAll("pre.logs").forEach((p) => { p.scrollTop = p.scrollHeight; });
+}
+
 function openRerunAllDialog(v) {
   openDialog(h("h2", {}, "Uruchom całość od nowa"),
     h("p", {}, "Wszystkie etapy zostaną wykonane ponownie, a dotychczasowe wyniki (transkrypt, klatki, opisy, notatki) usunięte."),
@@ -366,7 +382,9 @@ function updateDetail() {
         !job && resumable ? h("button", { class: "primary", onclick: () => runVideo(v.id, {}) }, v.overall === "idle" ? "Uruchom" : "Wznów") : null,
         h("button", { disabled: !!job, onclick: () => openRerunAllDialog(v) }, "Uruchom całość od nowa"))),
     !v.video_exists ? h("div", { class: "banner", style: "margin:10px 0 0" }, `Plik wideo nie istnieje: ${v.video_path}`) : null,
-    v.error && v.overall === "error" ? h("div", { class: "banner", style: "margin:10px 0 0" }, `Błąd: ${v.error}`) : null,
+    v.error && v.overall === "error" ? h("div", { class: "banner", style: "margin:10px 0 0" },
+      h("div", {}, `Błąd: ${v.error}`),
+      h("div", { style: "margin-top:8px" }, h("button", { class: "small", onclick: () => openDiagnostics(v.id) }, "Szczegóły błędu i logi"))) : null,
     v.overall === "interrupted" ? h("div", { class: "banner warn", style: "margin:10px 0 0" }, "Poprzednie uruchomienie zostało przerwane (np. wyłączenie WSL). Wznów, aby kontynuować od ostatniego checkpointu.") : null));
   if (!stages) return;
   stages.replaceChildren(h("div", { class: "card" }, STAGES.map((s) => {
@@ -381,8 +399,36 @@ function updateDetail() {
   })));
 }
 
+// ---------- widok: logi serwera ----------
+let logsTimer = null;
+function renderServerLogs() {
+  const pre = h("pre", { class: "logs", id: "srvlog", style: "max-height:70vh" }, "Ładowanie…");
+  const path = h("span", { class: "muted small" });
+  const load = async () => {
+    try {
+      const d = await api("/api/server-log?lines=400");
+      const near = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+      pre.textContent = d.lines.length ? d.lines.join("\n") : "Log jest pusty.";
+      path.textContent = d.path;
+      if (near) pre.scrollTop = pre.scrollHeight;
+    } catch (e) { pre.textContent = e.message; }
+  };
+  $("#view").replaceChildren(h("a", { href: "#/", class: "small" }, "← Wykłady"), h("h1", { style: "margin-top:6px" }, "Logi serwera"),
+    h("div", { class: "row spread", style: "margin-bottom:8px" }, path, h("button", { class: "small", onclick: load }, "Odśwież")),
+    pre);
+  load();
+  clearInterval(logsTimer);
+  logsTimer = setInterval(load, 3000);
+}
+
 // ---------- routing i dane ----------
 function route() {
+  clearInterval(logsTimer);
+  if (location.hash === "#/logs") {
+    detailId = null; activeTab = null; stopLogs();
+    renderServerLogs();
+    return;
+  }
   const m = location.hash.match(/^#\/video\/([a-z0-9_-]+)(?:\/(notes|materials|chat))?/);
   if (m) {
     const tab = m[2] || "process";
@@ -403,6 +449,7 @@ function route() {
 function rerender() {
   renderSys();
   updateBanner();
+  if (location.hash === "#/logs") return;
   if (detailId && location.hash.startsWith("#/video/")) updateDetail();
   else renderLibrary();
 }

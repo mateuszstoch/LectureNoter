@@ -2,6 +2,7 @@
 import argparse
 import asyncio
 import json
+import logging
 from pathlib import Path
 
 import contextlib
@@ -12,19 +13,23 @@ import threading
 
 import uvicorn
 import yaml
+from loguru import logger
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from diagnostics import hint_for
 from gpu_lock import GpuLock
+from io_utils import read_json
 from main import STAGES
 from ollama_client import OllamaClient, pick_profile, total_vram_gb, vram_used_gb
 from ui import materials, notes as notes_mod
 from ui.chat import ChatError, ChatService, ChatStore
 from ui.jobs import JobError, JobManager
 from ui.library import Library, LibraryError
+from run_state import read_run_state
 
 ROOT = Path(__file__).resolve().parent
 
@@ -386,9 +391,44 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
                         yield f"data: {json.dumps(l, ensure_ascii=False)}\n\n"
         return StreamingResponse(gen(), media_type="text/event-stream")
 
+    # --- logi i diagnostyka ---
+    @app.exception_handler(Exception)
+    async def unhandled(request: Request, exc: Exception):
+        logger.exception(f"nieobsluzony wyjatek: {request.method} {request.url.path}")
+        return JSONResponse({"detail": f"Blad wewnetrzny serwera: {type(exc).__name__}: {exc} (szczegoly w logu serwera)"}, status_code=500)
+
+    @app.get("/api/server-log")
+    def server_log(lines: int = 300):
+        text, _ = tail_lines(work_dir / "server.log", min(max(lines, 1), 2000))
+        return {"path": str(work_dir / "server.log"), "lines": text}
+
+    @app.get("/api/videos/{vid}/diagnostics")
+    def diagnostics(vid: str):
+        wd = guard(lambda: lib.workdir(vid))
+        rs = read_run_state(wd)
+        stage = rs.get("error_stage") or rs.get("current_stage")
+        err = rs.get("error")
+
+        def tail(name, n):
+            return tail_lines(wd / name, n)[0]
+        return {"status": rs.get("status"), "stage": stage, "error": err, "hint": hint_for(err or ""),
+                "worker_log": tail(f"worker_{stage}.log", 80) if stage else [],
+                "pipeline_log": tail("pipeline.log", 80), "job_output": tail("job.out", 60)}
+
     # statyczny front (PWA) na koncu, zeby nie przykrywal tras /api
     app.mount("/", NoCacheStatic(directory=ROOT / "ui" / "static", html=True), name="static")
     return app
+
+
+class InterceptHandler(logging.Handler):
+    """Przekierowuje logi biblioteki `logging` (uvicorn, fastapi) do loguru, czyli tez do server.log."""
+
+    def emit(self, record):
+        try:
+            level = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+        logger.opt(exception=record.exc_info).log(level, record.getMessage())
 
 
 def main():
@@ -398,7 +438,12 @@ def main():
     ap.add_argument("--config", default=str(ROOT / "config.yaml"))
     args = ap.parse_args()
     cfg = yaml.safe_load(open(args.config, encoding="utf-8"))
-    uvicorn.run(create_app(cfg), host=args.host, port=args.port, log_level="info",
+    work_dir = ROOT / cfg["paths"]["work_dir"]
+    work_dir.mkdir(parents=True, exist_ok=True)
+    logger.add(work_dir / "server.log", rotation="5 MB", retention=3, encoding="utf-8", enqueue=True)
+    logging.basicConfig(handlers=[InterceptHandler()], level=logging.INFO, force=True)
+    logger.info(f"LectureNoter: start serwera na {args.host}:{args.port}")
+    uvicorn.run(create_app(cfg), host=args.host, port=args.port, log_level="info", log_config=None, access_log=False,
                 timeout_graceful_shutdown=2)  # nie czekaj w nieskonczonosc na otwarte strumienie SSE
 
 

@@ -27,8 +27,11 @@ def run_asr(video, workdir, cfg, language="pl", progress=None):
     wav = workdir / "audio.wav"
     if progress:
         progress.update(0, 1, "ekstrakcja audio")
+    logger.info(f"ASR: ekstrakcja audio z {Path(video).name}")
     extract_audio(video, wav)
+    logger.info(f"ASR: ladowanie modelu {cfg['model']} (cuda, {cfg['compute_type']})")
     model = WhisperModel(cfg["model"], device="cuda", compute_type=cfg["compute_type"])
+    logger.info("ASR: model zaladowany, start transkrypcji")
     try:
         segments, info = model.transcribe(
             str(wav), language=language, vad_filter=cfg["vad_filter"], beam_size=cfg["beam_size"],
@@ -45,6 +48,7 @@ def run_asr(video, workdir, cfg, language="pl", progress=None):
     finally:
         del model
         gc.collect()
+    logger.info(f"ASR: gotowe, {len(out)} segmentow")
     atomic_write_json(str(workdir / "transcript.json"), out)
     wav.unlink(missing_ok=True)
     return out

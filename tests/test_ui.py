@@ -726,3 +726,32 @@ def test_chat_stream_parses_tokens_and_errors():
             list(client.chat_stream("m", []))
     finally:
         srv.shutdown()
+
+
+# ---------- logi i diagnostyka ----------
+def test_diagnostics_and_server_log_endpoints(client, env):
+    c, jm = client
+    c.post("/api/videos", json={"files": ["ok.mp4"], "enqueue": False})
+    wd = env[0].workdir("ok")
+    (wd / "run_state.json").write_text(json.dumps({"status": "error", "error_stage": "asr",
+                                                   "error": "etap asr zakonczyl sie kodem 1: No module named 'faster_whisper'"}))
+    (wd / "worker_asr.log").write_text("Traceback...\nImportError: boom\n")
+    (wd / "pipeline.log").write_text("linia pipeline\n")
+    (wd / "job.out").write_bytes(b"wyjscie zadania\n")
+    d = c.get("/api/videos/ok/diagnostics").json()
+    assert d["stage"] == "asr" and d["status"] == "error" and "pip install" in d["hint"]
+    assert d["worker_log"][-1] == "ImportError: boom" and d["pipeline_log"] == ["linia pipeline"] and d["job_output"] == ["wyjscie zadania"]
+    assert c.get("/api/videos/nie-ma/diagnostics").status_code == 400
+    lg = c.get("/api/server-log", params={"lines": 5}).json()
+    assert lg["lines"] == [] and lg["path"].endswith("server.log")
+
+
+def test_unhandled_exception_returns_json_detail(env, monkeypatch):
+    lib, gpu, jm, videos, work = env
+    app = create_app(CFG, videos, work, jobs=jm, start_jobs=False, extra_hosts=("testserver",))
+
+    def boom():
+        raise ValueError("cos poszlo nie tak")
+    monkeypatch.setattr(app.state.lib, "list_files", boom)
+    r = TestClient(app, raise_server_exceptions=False).get("/api/library/files")
+    assert r.status_code == 500 and "ValueError: cos poszlo nie tak" in r.json()["detail"] and "logu serwera" in r.json()["detail"]
