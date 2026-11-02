@@ -42,7 +42,8 @@ Projekt i nagrania trzymaj w systemie plików WSL (np. `~/LectureNoter`), nie w 
 
 Użyj skryptu `scripts\start.bat`: uruchamia serwer w WSL (jeśli jeszcze nie działa) i otwiera aplikację w oknie Edge/Chrome bez paska przeglądarki. Skopiuj go na Pulpit lub przypnij do paska zadań.
 
-- Projekt w innym miejscu niż `~/LectureNoter`: ustaw zmienną środowiskową `LECTURENOTER_DIR`.
+- Projekt w innym miejscu niż `~/LectureNoter`: ustaw zmienną środowiskową `LECTURENOTER_DIR` (ścieżka w WSL, bez spacji). Domyślna dystrybucja WSL inna niż Ubuntu (np. `docker-desktop`): ustaw `LECTURENOTER_DISTRO=Ubuntu` (nazwy sprawdzisz przez `wsl -l`).
+- Skrypt otwiera okno „LectureNoter server” z logiem serwera. Zostaw je otwarte; przy błędzie zobaczysz w nim komunikat. Jeśli nic się nie dzieje, uruchom `scripts\start.bat` z `cmd` (nie dwuklikiem), żeby zobaczyć komunikaty skryptu.
 - Aplikację można też zainstalować z przeglądarki (Edge: menu → Aplikacje → „Zainstaluj tę witrynę jako aplikację”). Okno zainstalowanej aplikacji nie uruchamia serwera: najpierw musi działać `start.bat` (albo ręcznie jak niżej).
 
 Ręcznie: w terminalu WSL
