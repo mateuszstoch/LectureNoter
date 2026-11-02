@@ -391,7 +391,8 @@ def main():
         worker(args.worker, args, cfg)
         return
     if not Path(args.video).exists():
-        sys.exit(f"brak pliku: {args.video}")
+        sys.exit(f"brak pliku wideo: {args.video} (katalog biezacy: {os.getcwd()}). Sprawdz, czy plik istnieje i jest "
+                 "dostepny z WSL/Linuksa; film dodaj ponownie z katalogu videos/ projektu.")
     for tool in ("ffmpeg", "ffprobe"):
         if not shutil.which(tool):
             sys.exit(f"brak {tool} w PATH")

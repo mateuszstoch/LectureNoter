@@ -755,3 +755,24 @@ def test_unhandled_exception_returns_json_detail(env, monkeypatch):
     monkeypatch.setattr(app.state.lib, "list_files", boom)
     r = TestClient(app, raise_server_exceptions=False).get("/api/library/files")
     assert r.status_code == 500 and "ValueError: cos poszlo nie tak" in r.json()["detail"] and "logu serwera" in r.json()["detail"]
+
+
+def test_job_fails_with_clear_message_when_video_missing(env, tmp_path):
+    lib, gpu, jm, videos, work = env
+    lib.add_video("ok.mp4")
+    (videos / "ok.mp4").unlink()  # film przeniesiony/usuniety po dodaniu
+    j = jm.enqueue("ok")
+    jm.tick()
+    job = next(x for x in jm.snapshot()["jobs"] if x["id"] == j["id"])
+    assert job["status"] == "error" and "Plik wideo nie istnieje" in job["error"] and "ok.mp4" in job["error"]
+    assert not (lib.workdir("ok") / "job.out").exists()  # proces w ogole nie wystartowal
+    # kolejka nie blokuje sie na bledzie: kolejne zadanie startuje
+    lib.add_video("other.mp4")
+    j2 = jm.enqueue("other")
+    wait_for(jm, j2["id"], "done")
+
+
+def test_cli_missing_video_message(tmp_path):
+    r = subprocess.run([sys.executable, str(ROOT / "main.py"), str(tmp_path / "nie-ma.mp4"), "--workdir", str(tmp_path / "w")],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 1 and "brak pliku wideo" in r.stderr and "nie-ma.mp4" in r.stderr

@@ -192,10 +192,28 @@ class JobManager:
             self.blocked_by = None
             self._start(nxt)
 
+    @staticmethod
+    def preflight(meta):
+        """Czytelny opis problemu, ktory uniemozliwilby start zadania (albo None)."""
+        video = meta.get("video_path")
+        if not video or not Path(video).exists():
+            return (f"Plik wideo nie istnieje (z perspektywy serwera): {video}. Film mogl zostac przeniesiony lub usuniety "
+                    "albo projekt dzialal wczesniej w innej lokalizacji (inna sciezka WSL). Dodaj film ponownie z katalogu videos/.")
+        if not Path(sys.executable).exists():
+            return (f"Interpreter Pythona serwera nie istnieje: {sys.executable}. Srodowisko venv zostalo usuniete lub "
+                    "przeniesione. Uruchom serwer ponownie (scripts/start.sh albo start.bat).")
+        return None
+
     def _start(self, job):
         try:
             wd = self.lib.workdir(job["video_id"])
             meta = read_json(wd / "meta.json", {})
+            problem = self.preflight(meta)
+            if problem:
+                logger.error(f"zadanie {job['id']} ({job['video_id']}): {problem}")
+                job.update(status="error", finished=time.time(), error=problem)
+                self._save()
+                return
             out = open(wd / "job.out", "ab")
             self._proc = subprocess.Popen(self.cmd_builder(job, wd, meta), stdout=out, stderr=out,
                                           stdin=subprocess.DEVNULL, start_new_session=True)
