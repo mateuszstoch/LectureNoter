@@ -190,8 +190,9 @@ function mountNotesTab(container, videoId) {
         show();
       } catch (e) { toast(e.message); }
     };
-    const cancel = () => {
-      if (dirty && !confirm("Odrzucić niezapisane zmiany?")) return;
+    const cancel = async () => {
+      if (dirty && !(await confirmDialog({ title: "Odrzucić zmiany?", text: "Niezapisane zmiany w notatkach zostaną utracone.", confirmLabel: "Odrzuć", danger: true }))) return;
+      dirty = false;
       show();
     };
     root.replaceChildren(

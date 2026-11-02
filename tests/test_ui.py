@@ -906,3 +906,42 @@ def test_busy_detection_includes_chat_generation(client):
     c.app.state.chat._generating = True
     assert c.app.state.is_busy() is True
     c.app.state.chat._generating = False
+
+
+# ---------- eksport rozmowy ----------
+def test_chat_export_markdown(chat_client):
+    c, fake, app = chat_client
+    cid = c.post("/api/videos/ok/chats", json={}).json()["id"]
+    c.post(f"/api/videos/ok/chats/{cid}/messages", json={"content": "Co to maszyna Turinga?"})
+    r = c.get(f"/api/videos/ok/chats/{cid}/export")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/markdown")
+    assert f'filename="ok-rozmowa-{cid}.md"' in r.headers["content-disposition"]
+    md = r.text
+    assert md.startswith("# Co to maszyna Turinga?") and "Wykład: ok" in md and "model: qwen2.5:7b-instruct" in md
+    assert "### Ty" in md and "Co to maszyna Turinga?" in md
+    assert "### Asystent" in md and "Odpowiedź testowa." in md
+    assert "*Użyte fragmenty:" in md and "Notatki:" in md
+    assert md.index("### Ty") < md.index("### Asystent")
+
+
+def test_chat_export_keeps_latex_and_marks_stopped(tmp_path):
+    from ui.chat import export_markdown
+    chat = {"title": "T", "model": "m", "created": 1_700_000_000, "summary": "krótko o\nmaszynach", "messages": [
+        {"role": "user", "content": "Wzór?", "ts": 1_700_000_001},
+        {"role": "assistant", "content": "Wzór: $$\\sum_{i=1}^{4} x_i$$", "ts": 1_700_000_002, "stopped": True,
+         "sources": [{"kind": "transcript", "label": "Mowa 00:01:35", "t": 95}]}]}
+    md = export_markdown(chat, "Wykład 1")
+    assert "$$\\sum_{i=1}^{4} x_i$$" in md and "*(odpowiedź przerwana)*" in md and "Mowa 00:01:35" in md
+    assert "> Streszczenie wcześniejszej części rozmowy: krótko o maszynach" in md
+    assert md.endswith("\n") and not md.endswith("\n\n")
+
+
+def test_chat_export_errors_and_empty_chat(chat_client):
+    c, fake, app = chat_client
+    assert c.get("/api/videos/ok/chats/brak/export").status_code == 404
+    cid = c.post("/api/videos/ok/chats", json={"title": "Pusta"}).json()["id"]
+    assert c.get(f"/api/videos/ok/chats/{cid}/export", params={"format": "pdf"}).status_code == 400
+    assert c.get(f"/api/videos/ok/chats/{cid}/export").text.startswith("# Pusta")  # pusta rozmowa: sam naglowek
+    # usuwanie przez API i brak tej rozmowy w eksporcie
+    assert c.delete(f"/api/videos/ok/chats/{cid}").json() == {"ok": True}
+    assert c.get(f"/api/videos/ok/chats/{cid}/export").status_code == 404

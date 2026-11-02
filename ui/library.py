@@ -5,6 +5,7 @@ import shutil
 import unicodedata
 from pathlib import Path, PurePosixPath
 
+from config_loader import resolve
 from io_utils import read_json
 from main import STAGES, PipelineOrchestrator
 
@@ -24,9 +25,13 @@ class LibraryError(ValueError):
 
 class Library:
     def __init__(self, videos_dir, work_dir, cfg):
-        self.videos_dir, self.work_dir, self.cfg = Path(videos_dir), Path(work_dir), cfg
+        self.videos_dir, self.work_dir, self._cfg_src = Path(videos_dir), Path(work_dir), cfg
         self.videos_dir.mkdir(parents=True, exist_ok=True)
         self.work_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def cfg(self):
+        return resolve(self._cfg_src)  # aktualna konfiguracja (LiveConfig przeladowuje plik po zmianie)
 
     # --- identyfikatory i sciezki ---
     def workdir(self, video_id):

@@ -19,6 +19,8 @@ function mountChatTab(container, videoId) {
   const statusEl = h("span", { class: "muted small" });
   const notice = h("div", { class: "banner warn", hidden: true, style: "margin:0 0 8px" });
   const releaseBtn = h("button", { class: "small", title: "Rozładuj model czatu z pamięci GPU", onclick: releaseGpu }, "Zwolnij GPU");
+  const mdLink = h("a", { class: "btn small", href: "#", download: "rozmowa.md", title: "Pobierz rozmowę jako Markdown" }, "Markdown");
+  const pdfBtn = h("button", { class: "small", title: "Otwiera okno drukowania: wybierz „Zapisz jako PDF”", onclick: () => printChat() }, "PDF");
 
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
@@ -27,7 +29,7 @@ function mountChatTab(container, videoId) {
   main.append(
     h("div", { class: "row spread", style: "margin-bottom:8px" },
       h("div", { class: "row" }, h("span", { class: "muted small" }, "Model:"), modelSel),
-      h("div", { class: "row" }, statusEl, releaseBtn)),
+      h("div", { class: "row" }, statusEl, releaseBtn, h("span", { class: "muted small" }, "Eksport:"), mdLink, pdfBtn)),
     notice, msgBox,
     h("div", { class: "chat-form" }, input, h("div", { class: "row", style: "justify-content:flex-end" }, stopBtn, sendBtn)),
     h("div", { class: "muted small", style: "margin-top:6px" }, "Odpowiedzi opierają się na automatycznie wygenerowanych notatkach i transkrypcie (mogą zawierać błędy). Wszystko działa lokalnie."));
@@ -88,11 +90,43 @@ function mountChatTab(container, videoId) {
     try { const c = await api(`/api/videos/${videoId}/chats`, { method: "POST", body: {} }); await loadChats(c.id); input.focus(); } catch (e) { toast(e.message); }
   }
   async function delChat(id) {
-    if (!confirm("Usunąć tę rozmowę?")) return;
+    const title = (chats.find((c) => c.id === id) || {}).title || "ta rozmowa";
+    const ok = await confirmDialog({ title: "Usuń rozmowę", text: `„${title}” zostanie trwale usunięta. Możesz ją wcześniej wyeksportować (Markdown lub PDF).`,
+      confirmLabel: "Usuń", danger: true });
+    if (!ok) return;
     try { await api(`/api/videos/${videoId}/chats/${id}`, { method: "DELETE" }); if (current && current.id === id) current = null; await loadChats(); } catch (e) { toast(e.message); }
   }
   async function releaseGpu() {
     try { await api("/api/chat/release", { method: "POST" }); } catch (e) { toast(e.message); }
+  }
+
+  // ---------- eksport ----------
+  function refreshExport() {
+    const has = !!(current && current.messages.length);
+    mdLink.setAttribute("href", has ? `/api/videos/${videoId}/chats/${current.id}/export?format=md` : "#");
+    mdLink.setAttribute("download", has ? `${videoId}-rozmowa-${current.id}.md` : "rozmowa.md");
+    mdLink.classList.toggle("disabled", !has);
+    mdLink.onclick = (e) => { if (!has) e.preventDefault(); };
+    pdfBtn.disabled = !has;
+  }
+
+  function printChat() {
+    if (!current || !current.messages.length) return;
+    const area = h("article", { id: "print-area", class: "print-chat" },
+      h("h1", {}, current.title),
+      h("div", { class: "meta" }, [(videoById(videoId) || {}).title, current.model, fmtDate(current.created)].filter(Boolean).join("  ·  ")),
+      current.messages.map((m) => {
+        const body = h("div", { class: "pc-body notes-body" });
+        if (m.role === "user") body.textContent = m.content; else setAssistant(body, m.content);
+        const src = (m.sources || []).map((s) => (s.kind === "notes" ? `Notatki: ${s.label}` : s.label)).join("; ");
+        return h("section", { class: `pc-msg ${m.role}` }, h("div", { class: "who" }, m.role === "user" ? "Ty" : "Asystent"), body,
+          src ? h("div", { class: "pc-src" }, `Użyte fragmenty: ${src}`) : null);
+      }));
+    document.body.append(area);
+    document.body.classList.add("printing");
+    const cleanup = () => { document.body.classList.remove("printing"); area.remove(); window.removeEventListener("afterprint", cleanup); };
+    window.addEventListener("afterprint", cleanup);
+    window.print();
   }
 
   // ---------- wiadomości ----------
@@ -131,6 +165,7 @@ function mountChatTab(container, videoId) {
     }
     msgBox.scrollTop = msgBox.scrollHeight;
     refreshControls();
+    refreshExport();
   }
 
   // ---------- wysyłanie i strumień ----------

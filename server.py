@@ -21,13 +21,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from config_loader import LiveConfig, resolve
 from diagnostics import hint_for
 from gpu_lock import GpuLock
 from io_utils import read_json
 from main import STAGES
 from ollama_client import OllamaClient, pick_profile, total_vram_gb, vram_used_gb
 from ui import materials, notes as notes_mod
-from ui.chat import ChatError, ChatService, ChatStore
+from ui.chat import ChatError, ChatService, ChatStore, export_markdown
 from ui.jobs import JobError, JobManager
 from ui.library import Library, LibraryError
 from ui.lifecycle import AutoExit, ClientTracker, KeepAwake
@@ -89,8 +90,11 @@ def tail_lines(path, n=200):
 
 def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, extra_hosts=(), ollama=None,
                auto_exit=False, idle_grace=30.0, startup_grace=180.0):
-    videos_dir = Path(videos_dir or ROOT / cfg["paths"]["videos_dir"])
-    work_dir = Path(work_dir or ROOT / cfg["paths"]["work_dir"])
+    def C():
+        return resolve(cfg)  # aktualna konfiguracja (przy LiveConfig przeladowana po zmianie pliku)
+
+    videos_dir = Path(videos_dir or ROOT / C()["paths"]["videos_dir"])
+    work_dir = Path(work_dir or ROOT / C()["paths"]["work_dir"])
     lib = Library(videos_dir, work_dir, cfg)
     gpu = GpuLock(work_dir / ".gpu.lock")
     jm = jobs or JobManager(lib, gpu)
@@ -117,7 +121,7 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
         chat.release()  # rozladuj model czatu i zwolnij GPU przy zamykaniu serwera
 
     app = FastAPI(title="LectureNoter", lifespan=lifespan)
-    ollama = ollama or OllamaClient(timeout=cfg.get("chat", {}).get("timeout_s", 600))
+    ollama = ollama or OllamaClient(timeout=C().get("chat", {}).get("timeout_s", 600))
     chat = ChatService(lib, gpu, cfg, ollama)
     jm.set_preempt(chat.preempt)  # zadanie czekajace na GPU zwalnia model czatu (gdy ten nie generuje)
     app.state.chat, app.state.tracker, app.state.is_busy = chat, tracker, is_busy
@@ -149,13 +153,13 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
                           loaded=client.loaded_models())
         except Exception:
             pass
-        return {"ollama": ollama, "gpu_holder": gpu.holder(), "profile": pick_profile(cfg),
+        return {"ollama": ollama, "gpu_holder": gpu.holder(), "profile": pick_profile(C()),
                 "pandoc": bool(shutil.which("pandoc")),
                 "auto_exit": auto_exit, "busy": is_busy(),
                 "paths": {"videos_dir": str(lib.videos_dir.resolve()), "work_dir": str(lib.work_dir.resolve())},
                 "vram": {"total_gb": total_vram_gb(), "used_gb": vram_used_gb()},
-                "models": {"vlm": cfg["vlm"]["model"],
-                           "llm": cfg["profiles"][pick_profile(cfg)]["llm_model"]}}
+                "models": {"vlm": C()["vlm"]["model"],
+                           "llm": C()["profiles"][pick_profile(C())]["llm_model"]}}
 
     @app.get("/api/library/files")
     def files():
@@ -342,6 +346,16 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
     def chat_get(vid: str, cid: str):
         return chat_guard(lambda: ChatStore(wd_of(vid)).get(cid))
 
+    @app.get("/api/videos/{vid}/chats/{cid}/export")
+    def chat_export(vid: str, cid: str, format: str = "md"):
+        if format != "md":
+            raise HTTPException(400, "format: md (PDF: drukowanie z przegladarki)")
+        wd = wd_of(vid)
+        chat_ = chat_guard(lambda: ChatStore(wd).get(cid))
+        title = (read_json(wd / "meta.json", {}) or {}).get("title")
+        return Response(export_markdown(chat_, title), media_type="text/markdown; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="{vid}-rozmowa-{cid}.md"'})
+
     @app.delete("/api/videos/{vid}/chats/{cid}")
     def chat_delete(vid: str, cid: str):
         chat_guard(lambda: ChatStore(wd_of(vid)).delete(cid))
@@ -502,8 +516,8 @@ def main():
     ap.add_argument("--idle-grace", type=float, default=30.0, help="sekundy bez okna aplikacji przed wylaczeniem")
     ap.add_argument("--startup-grace", type=float, default=180.0, help="sekundy oczekiwania na pierwsze okno po starcie")
     args = ap.parse_args()
-    cfg = yaml.safe_load(open(args.config, encoding="utf-8"))
-    work_dir = ROOT / cfg["paths"]["work_dir"]
+    cfg = LiveConfig(args.config)
+    work_dir = ROOT / cfg()["paths"]["work_dir"]
     work_dir.mkdir(parents=True, exist_ok=True)
     logger.add(work_dir / "server.log", rotation="5 MB", retention=3, encoding="utf-8", enqueue=True)
     logging.basicConfig(handlers=[InterceptHandler()], level=logging.INFO, force=True)

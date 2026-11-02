@@ -277,7 +277,25 @@ pre.vlm { white-space: pre-wrap; background: var(--sunk); padding: 8px 12px; fon
   .toolbar input[type=text] { flex: 1; min-width: 0; }
 }
 
+#print-area { display: none; }
+.btn.small { padding: 3px 9px; font-size: 12.5px; border-color: var(--rule); color: var(--ink-2); }
+.btn.small:hover { border-color: var(--ink); color: var(--paper); }
+.btn.disabled { opacity: .4; pointer-events: none; }
+.print-chat h1 { font-size: 26px; } .print-chat .meta { margin: 4px 0 18px; }
+.pc-msg { padding: 12px 0; border-top: 1px solid var(--rule); break-inside: avoid-page; }
+.pc-msg.user .pc-body { white-space: pre-wrap; font: 15px/1.5 var(--sans); border-left: 3px solid var(--accent); padding-left: 12px; }
+.pc-msg.assistant .pc-body { font-size: 16px; max-width: none; }
+.pc-src { font: italic 12.5px var(--serif); color: var(--ink-2); margin-top: 6px; }
+
 @media print {
+  /* wydruk zawsze w jasnych kolorach, takze gdy system ma ciemny motyw (inaczej tekst bylby jasny na bialym) */
+  :root, :root:not([data-theme="light"]) {
+    --paper: #fff; --surface: #fff; --sunk: #f1f1f1; --ink: #000; --ink-2: #222; --muted: #555; --rule: #bbb;
+    --accent: #a3352b; --link: #000;
+  }
+  body.printing #view, body.printing .topbar, body.printing .banner, body.printing dialog { display: none !important; }
+  body.printing #print-area { display: block !important; color: #000; background: #fff; }
+  .pc-msg.user .pc-body { border-left-color: #000; } .pc-src { color: #333; }
   body { background: #fff; color: #000; }
   .topbar, .banner, .tabs, .toolbar, .toc, #dhead, dialog, .chat-layout { display: none !important; }
   #view { max-width: none; padding: 0; }

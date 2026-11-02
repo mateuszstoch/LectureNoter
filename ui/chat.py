@@ -7,6 +7,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from config_loader import resolve
 from io_utils import atomic_write_json, read_json
 from llm_synthesis import est_tokens
 from ollama_client import OllamaError
@@ -39,6 +40,30 @@ class ChatError(Exception):
 
 class ChatBusy(ChatError):
     """GPU zajete przez inne zadanie (np. przetwarzanie filmu)."""
+
+
+def export_markdown(chat, video_title=None):
+    """Rozmowa jako czytelny Markdown: pytania, odpowiedzi (z wzorami LaTeX bez zmian) i uzyte fragmenty zrodlowe."""
+    def when(ts):
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)) if ts else ""
+    meta = [x for x in (f"Wykład: {video_title}" if video_title else None, f"model: {chat.get('model')}" if chat.get("model") else None,
+                        when(chat.get("created"))) if x]
+    lines = [f"# {chat.get('title') or 'Rozmowa'}", ""]
+    if meta:
+        lines += ["*" + " · ".join(meta) + "*", ""]
+    if chat.get("summary"):
+        lines += ["> Streszczenie wcześniejszej części rozmowy: " + chat["summary"].replace("\n", " "), ""]
+    for m in chat.get("messages", []):
+        who = "Ty" if m["role"] == "user" else "Asystent"
+        stamp = when(m.get("ts")) if m.get("ts", 0) > 1e9 else ""
+        lines += ["---", "", f"### {who}" + (f" · {stamp}" if stamp else ""), "", m["content"].strip(), ""]
+        if m.get("stopped"):
+            lines += ["*(odpowiedź przerwana)*", ""]
+        srcs = m.get("sources") or []
+        if srcs:
+            labels = [(f"Notatki: {s['label']}" if s.get("kind") == "notes" else s["label"]) for s in srcs]
+            lines += ["*Użyte fragmenty: " + "; ".join(labels) + "*", ""]
+    return "\n".join(lines).rstrip() + "\n"
 
 
 class ChatStore:
@@ -101,8 +126,8 @@ class ChatStore:
 
 class ChatService:
     def __init__(self, library, gpu_lock, cfg, client):
-        self.lib, self.gpu, self.cfg, self.client = library, gpu_lock, cfg, client
-        self.ccfg = cfg.get("chat", {})
+        self.lib, self.gpu, self.client = library, gpu_lock, client
+        self._cfg_src, self._cfg_override, self._ccfg_override = cfg, None, None
         self._lock = threading.RLock()
         self._generating = False
         self._gen_video = None
@@ -110,6 +135,22 @@ class ChatService:
         self._model = None
         self._timer = None
         self._idle_at = None
+
+    @property
+    def cfg(self):
+        return self._cfg_override if self._cfg_override is not None else resolve(self._cfg_src)
+
+    @cfg.setter
+    def cfg(self, value):  # nadpisanie (testy)
+        self._cfg_override = value
+
+    @property
+    def ccfg(self):
+        return self._ccfg_override if self._ccfg_override is not None else self.cfg.get("chat", {})
+
+    @ccfg.setter
+    def ccfg(self, value):
+        self._ccfg_override = value
 
     # ---------- GPU ----------
     def default_model(self):

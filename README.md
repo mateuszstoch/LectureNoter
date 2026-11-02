@@ -74,9 +74,9 @@ Opcje: `LECTURENOTER_VENV` (katalog środowiska), `LECTURENOTER_PYTHON` (interpr
 - **Szczegóły filmu:** regeneracja pojedynczego etapu (z podglądem, co zostanie usunięte), uruchomienie całości od nowa, wznowienie po awarii, logi na żywo.
 - **Notatki:** Markdown z wzorami (KaTeX, działa offline), spis treści, wyszukiwanie, klikalne znaczniki czasu (pokazują tablicę i mowę z danego momentu). Edycja z historią wersji: wersja edytowana zapisuje się osobno (`lecture_notes.edited.md`) i nie jest nadpisywana przy ponownej generacji. Eksport: Markdown, PDF (przycisk „PDF” otwiera okno drukowania, wybierz „Zapisz jako PDF”), Word (wymaga `pandoc`).
 - **Materiały:** klatki z tablicy i przeszukiwalny transkrypt.
-- **Czat:** pytania do notatek, transkryptu i odczytu tablicy jednego filmu. Odpowiedzi są strumieniowane, rozmowy zapisują się per film, starsze tury są streszczane. Model wybierasz spośród zainstalowanych w Ollamie. Czat i przetwarzanie nie używają GPU jednocześnie: w czasie zadania czat jest wyłączony, a bezczynny model czatu jest zwalniany przed startem zadania.
+- **Czat:** pytania do notatek, transkryptu i odczytu tablicy jednego filmu. Rozmowy można usuwać (okno potwierdzenia) i eksportować: Markdown (z wzorami i listą użytych fragmentów) oraz PDF (przycisk „PDF” otwiera okno drukowania, wybierz „Zapisz jako PDF”; wydruk zawsze w jasnych kolorach). Odpowiedzi są strumieniowane, rozmowy zapisują się per film, starsze tury są streszczane. Model wybierasz spośród zainstalowanych w Ollamie. Czat i przetwarzanie nie używają GPU jednocześnie: w czasie zadania czat jest wyłączony, a bezczynny model czatu jest zwalniany przed startem zadania.
 
-Inna lokalizacja Ollamy: zmienna `OLLAMA_HOST` (np. `OLLAMA_HOST=127.0.0.1:11435`).
+Serwer sam przeładowuje `config.yaml` po zmianie pliku (np. po `git pull`), więc wyniki wygenerowane po zmianie konfiguracji nie wyglądają na „nieaktualne”. Po aktualizacji kodu zrestartuj serwer. Inna lokalizacja Ollamy: zmienna `OLLAMA_HOST` (np. `OLLAMA_HOST=127.0.0.1:11435`).
 
 ## Bez interfejsu (CLI)
 

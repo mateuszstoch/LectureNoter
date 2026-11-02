@@ -106,6 +106,20 @@ function openDialog(...content) {
 }
 function closeDialog() { const d = $("#dlg"); if (d.open) d.close(); }
 
+// Własne okno potwierdzenia zamiast natywnego confirm(): confirm bywa blokowany w oknie aplikacji/PWA i zwraca "nie",
+// przez co akcja po cichu się nie wykonuje.
+function confirmDialog({ title, text, confirmLabel = "Potwierdź", cancelLabel = "Anuluj", danger = false }) {
+  return new Promise((resolve) => {
+    const d = $("#dlg");
+    const onClose = () => resolve(false); // Esc lub zamknięcie okna = anulowanie
+    const finish = (value) => { d.removeEventListener("close", onClose); closeDialog(); resolve(value); };
+    openDialog(h("h2", {}, title), h("p", {}, text),
+      h("div", { class: "actions" }, h("button", { onclick: () => finish(false) }, cancelLabel),
+        h("button", { class: danger ? "danger" : "primary", onclick: () => finish(true) }, confirmLabel)));
+    d.addEventListener("close", onClose, { once: true });
+  });
+}
+
 // ---------- pasek systemowy i baner ----------
 function updateBanner() {
   if (toast.active) return;
@@ -499,8 +513,19 @@ function renderServerLogs() {
 }
 
 // ---------- routing i dane ----------
+let lastHash = "#/";
+
 function route() {
   clearInterval(logsTimer);
+  if (activeTab && activeTab.dirty() && location.hash !== lastHash) {
+    // niezapisane zmiany w notatkach: cofnij adres (bez ponownego wywołania route) i zapytaj własnym oknem
+    const target = location.hash;
+    history.replaceState(null, "", lastHash);
+    confirmDialog({ title: "Niezapisane zmiany", text: "Masz niezapisane zmiany w notatkach. Opuścić stronę i je odrzucić?",
+      confirmLabel: "Opuść", danger: true }).then((ok) => { if (ok) { activeTab = null; location.hash = target; } });
+    return;
+  }
+  lastHash = location.hash || "#/";
   if (location.hash === "#/logs") {
     detailId = null; activeTab = null; stopLogs();
     renderServerLogs();
@@ -510,10 +535,6 @@ function route() {
   if (m) {
     const tab = m[2] || "process";
     if (detailId !== m[1] || detailTab !== tab || !$("#dhead")) {
-      if (activeTab && activeTab.dirty() && !confirm("Masz niezapisane zmiany w notatkach. Opuścić stronę?")) {
-        history.back();
-        return;
-      }
       mountDetail(m[1], tab);
     } else updateDetail();
   } else {
