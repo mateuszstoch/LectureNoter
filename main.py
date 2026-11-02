@@ -124,7 +124,7 @@ class PipelineOrchestrator:
     def config_sig(self, stage):
         c = self.cfg
         part = {"asr": [c["asr"], self.language], "frames": [c["frames"]],
-                "vlm": [c["vlm"]], "llm": [c["llm"], self.prof["llm_model"], self.prof["num_ctx"], self.language]}[stage]
+                "vlm": [{k: c["vlm"].get(k) for k in ("model", "num_predict", "keep_alive")}], "llm": [c["llm"], self.prof["llm_model"], self.prof["num_ctx"], self.language]}[stage]
         return cfg_hash(part)
 
     def input_sig(self, stage):

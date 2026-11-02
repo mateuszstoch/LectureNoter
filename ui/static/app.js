@@ -133,6 +133,7 @@ function updateBanner() {
     return;
   }
   const sys = state.system;
+  if (unexpectedExit(sys)) { showExitBanner(b, sys); return; }  // jednorazowa informacja, ma pierwszeństwo (da się zamknąć)
   const missing = [];
   if (sys && sys.ollama && sys.ollama.ok) {
     for (const m of [sys.models.vlm, sys.models.llm]) {
@@ -150,6 +151,26 @@ function updateBanner() {
   } else {
     b.hidden = true;
   }
+}
+
+function showExitBanner(b, sys) {
+    const pe = sys.previous_exit;
+    const when = pe.last_seen ? new Date(pe.last_seen * 1000).toLocaleString("pl-PL", { dateStyle: "short", timeStyle: "short" }) : "?";
+    const lowMem = pe.mem_available_mb != null && pe.mem_available_mb < 600;
+    b.className = "banner warn";
+    b.replaceChildren(
+      h("div", {}, `Poprzednie uruchomienie serwera zakończyło się nagle, bez zwykłego zamknięcia (ostatnia aktywność: ${when}). `,
+        lowMem ? `W tym momencie systemowi brakowało pamięci (wolne ${pe.mem_available_mb} MB), więc proces mógł zostać zabity przez system. `
+          : "Najczęstsze przyczyny: uśpienie komputera lub zamknięcie WSL, brak pamięci (system zabija proces), ręczne zabicie procesu. ",
+        "Szczegóły w ", h("a", { href: "#/logs" }, "Logach"), "."),
+      h("div", { style: "margin-top:8px" }, h("button", { class: "small", onclick: () => { try { sessionStorage.setItem("lecturenoter.pe", String(pe.started)); } catch (_) { /* pomiń */ } updateBanner(); } }, "Zamknij komunikat")));
+    b.hidden = false;
+}
+
+function unexpectedExit(sys) {
+  const pe = sys && sys.previous_exit;
+  if (!pe || pe.kind !== "unexpected") return false;
+  try { return sessionStorage.getItem("lecturenoter.pe") !== String(pe.started); } catch (_) { return true; }
 }
 
 function renderSys() {
@@ -546,6 +567,9 @@ function connect() {
   es.onopen = () => { state.connected = true; loadSystem(); };
   es.onerror = () => { state.connected = false; rerender(); };
 }
+
+// zamknięcie okna/karty: serwer z auto-exit skraca wtedy oczekiwanie (samo zerwanie połączenia ma długą karencję)
+window.addEventListener("pagehide", (e) => { if (!e.persisted && !state.stopped && navigator.sendBeacon) navigator.sendBeacon("/api/bye"); });
 
 document.addEventListener("click", (e) => {
   if (e.target.closest("#quit")) { e.preventDefault(); openShutdownDialog(); }

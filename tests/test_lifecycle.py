@@ -122,3 +122,70 @@ def test_keepawake_survives_missing_tool_and_spawn_errors():
         raise OSError("nie ma powershell.exe")
     ka2 = KeepAwake(lambda: True, spawn=boom, command=lambda: ["powershell.exe"], clock=clk)
     assert ka2.tick() is False  # nie wyrzuca wyjatku
+
+
+# ---------- laskawszy auto-exit: zerwane polaczenie vs jawne zamkniecie okna ----------
+def test_dropped_connection_gets_long_grace_but_explicit_close_is_quick():
+    clk, tr, ae, fired = make(grace=120)
+    tr.enter()
+    tr.leave()                                     # polaczenie zerwane (uspienie karty, przerwa w sieci), bez 'bye'
+    clk.advance(60)
+    assert ae.tick() is False                      # po 60 s serwer jeszcze czeka (wczesniej 30 s ubijalo go spod otwartego okna)
+    clk.advance(61)
+    assert ae.tick() is True and "polaczenie okna zerwane" in ae.reason
+
+    clk2, tr2, ae2, fired2 = make(grace=120)
+    tr2.enter()
+    tr2.bye()                                      # pagehide: uzytkownik zamknal okno
+    tr2.leave()
+    clk2.advance(10)
+    assert ae2.tick() is False
+    clk2.advance(6)
+    assert ae2.tick() is True and "zamknieto okno" in ae2.reason
+
+
+def test_reload_cancels_bye():
+    clk, tr, ae, fired = make(grace=120)
+    tr.enter()
+    tr.bye()          # odswiezenie strony tez wysyla pagehide...
+    tr.leave()
+    clk.advance(3)
+    tr.enter()        # ...ale nowa strona laczy sie od razu
+    clk.advance(500)
+    assert ae.tick() is False and not fired and tr.bye_at is None
+
+
+# ---------- wykrywanie naglego zakonczenia ----------
+def test_liveness_classifies_previous_run(tmp_path):
+    import json
+    from ui.lifecycle import Liveness
+    p = tmp_path / "state.json"
+    assert Liveness(p).previous is None                                    # pierwszy start
+    lv = Liveness(p, pid=111)
+    lv.begin()
+    lv.stop()
+    state = json.loads(p.read_text())
+    assert state["pid"] == 111 and state["clean_exit"] is False and "heartbeat" in state
+    # nowy start, a poprzedni proces nie zyje i nie zostawil znacznika: zakonczenie NAGLE
+    nxt = Liveness(p, pid=222, alive=lambda pid: False)
+    assert nxt.previous["kind"] == "unexpected" and nxt.previous["last_seen"] == state["heartbeat"]
+    # inna instancja nadal dziala: nie oceniamy
+    assert Liveness(p, pid=333, alive=lambda pid: True).previous["kind"] == "running"
+    # czyste zamkniecie z przyczyna
+    lv2 = Liveness(p, pid=444)
+    lv2.begin()
+    lv2.close("sygnal SIGTERM")
+    after = Liveness(p, pid=555, alive=lambda pid: False).previous
+    assert after == {"kind": "clean", "reason": "sygnal SIGTERM", "ended": json.loads(p.read_text())["ended"]}
+
+
+def test_liveness_heartbeat_updates(tmp_path):
+    import json
+    from ui.lifecycle import Liveness
+    clk = Clock()
+    lv = Liveness(tmp_path / "s.json", clock=clk, pid=1)
+    lv.begin()
+    clk.advance(10)
+    lv.tick()
+    assert json.loads((tmp_path / "s.json").read_text())["heartbeat"] == clk.t
+    lv.stop()

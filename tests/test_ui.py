@@ -1142,3 +1142,15 @@ def test_search_snippet_does_not_repeat_section_heading(search_env):
     hit = next(h for h in sleep["hits"] if h["kind"] == "notes" and h["heading"] == "Maszyna Turinga")
     assert hit["snippet"].lower().count("maszyna turinga") == 1          # tresc zaczyna sie od 'Maszyna Turinga ma taśmę…'
     assert hit["snippet"].startswith("Maszyna Turinga ma taśmę")
+
+
+def test_bye_endpoint_and_system_exposes_previous_exit(client):
+    c, jm = client
+    tr = c.app.state.tracker
+    assert tr.bye_at is None
+    assert c.post("/api/bye").json() == {"ok": True} and tr.bye_at is not None
+    c.get("/api/stream", params={"once": "true"})          # nowe polaczenie okna kasuje 'bye'
+    assert tr.bye_at is None
+    c.app.state.previous_exit = {"kind": "unexpected", "started": 1.0, "last_seen": 2.0, "mem_available_mb": 300}
+    d = c.get("/api/system").json()
+    assert d["previous_exit"]["kind"] == "unexpected" and d["uptime_s"] >= 0 and "auto_exit" in d

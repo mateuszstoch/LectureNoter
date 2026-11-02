@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 from loguru import logger
 
@@ -17,12 +18,18 @@ class ClientTracker:
         self.count = 0
         self.ever_connected = False
         self.last_activity = clock()
+        self.bye_at = None  # okno zglosilo zamkniecie (pagehide): wtedy karencja jest krotka
 
     def enter(self):
         with self._lock:
             self.count += 1
             self.ever_connected = True
+            self.bye_at = None
             self.last_activity = self._clock()
+
+    def bye(self):
+        with self._lock:
+            self.bye_at = self._clock()
 
     def leave(self):
         with self._lock:
@@ -66,12 +73,13 @@ class AutoExit(_Loop):
     - jesli zaden klient nie polaczy sie w ciagu `startup_grace` s od startu, tez konczy (zeby nie zostawal w tle),
     - dopoki trwa praca (zadanie, odpowiedz czatu), serwer dziala nawet bez okna i konczy po jej zakonczeniu."""
 
-    def __init__(self, tracker, is_busy, request_exit, grace=30.0, startup_grace=180.0, clock=time.time):
+    def __init__(self, tracker, is_busy, request_exit, grace=120.0, startup_grace=180.0, clock=time.time, bye_grace=15.0):
         super().__init__()
         self.tracker, self.is_busy, self.request_exit = tracker, is_busy, request_exit
-        self.grace, self.startup_grace, self.clock = grace, startup_grace, clock
+        self.grace, self.startup_grace, self.bye_grace, self.clock = grace, startup_grace, bye_grace, clock
         self.started = clock()
         self.fired = False
+        self.reason = None
 
     def tick(self):
         if self.fired:
@@ -82,19 +90,99 @@ class AutoExit(_Loop):
         if self.tracker.count > 0:
             return False
         if self.tracker.ever_connected:
-            idle, limit, why = self.clock() - self.tracker.last_activity, self.grace, "zamknieto okno aplikacji"
+            # jawne zamkniecie okna (pagehide) = krotka karencja; samo zerwane polaczenie (uspienie karty, przerwa w sieci,
+            # zasniecie komputera) = dluga, zeby serwer nie znikal spod otwartego okna
+            idle, why = self.clock() - self.tracker.last_activity, "zamknieto okno aplikacji"
+            limit = self.bye_grace if self.tracker.bye_at is not None else self.grace
+            if self.tracker.bye_at is None:
+                why = "polaczenie okna zerwane i nie wrocilo"
         else:
             idle, limit, why = self.clock() - self.started, self.startup_grace, "nikt nie polaczyl sie po starcie"
         if idle < limit:
             return False
         self.fired = True
-        logger.info(f"auto-exit: {why}, brak pracy od {idle:.0f} s: wylaczam serwer")
+        self.reason = f"auto-exit: {why} (brak okna i pracy od {idle:.0f} s)"
+        logger.info(self.reason)
         self.request_exit()
         return True
 
 
 def is_wsl():
     return bool(os.environ.get("WSL_DISTRO_NAME")) or "microsoft" in platform.release().lower()
+
+
+def read_mem():
+    """Pamiec procesu serwera i dostepna pamiec systemu (MB); None poza Linuksem. Zapisywane w heartbeat, zeby po nagłym
+    zabiciu (np. przez OOM killer) bylo widac, czy system byl na granicy pamieci."""
+    out = {"rss_mb": None, "mem_available_mb": None}
+    try:
+        for line in open("/proc/self/status"):
+            if line.startswith("VmRSS:"):
+                out["rss_mb"] = int(line.split()[1]) // 1024
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemAvailable:"):
+                out["mem_available_mb"] = int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return out
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+    except (ProcessLookupError, ValueError, TypeError):
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+class Liveness(_Loop):
+    """Zapisuje stan serwera (work/server.state.json) co 10 s i znacznik czystego zamkniecia. Przy kolejnym starcie
+    brak znacznika przy martwym procesie oznacza NAGLE zakonczenie (zabicie procesu, OOM, zasniecie/zamkniecie WSL),
+    ktore inaczej nie zostawiloby zadnego sladu."""
+    interval = 10.0
+
+    def __init__(self, path, clock=time.time, pid=None, alive=_pid_alive):
+        super().__init__()
+        from io_utils import read_json
+        self.path, self.clock, self.pid = Path(path), clock, pid or os.getpid()
+        old = read_json(self.path, None)
+        self.previous = self._classify(old, alive)
+        self.started = clock()
+
+    def _classify(self, old, alive):
+        if not old:
+            return None
+        if old.get("clean_exit"):
+            return {"kind": "clean", "reason": old.get("reason"), "ended": old.get("ended")}
+        if old.get("pid") and old["pid"] != self.pid and alive(old["pid"]):
+            return {"kind": "running", "pid": old["pid"]}  # inna instancja nadal dziala
+        return {"kind": "unexpected", "started": old.get("started"), "last_seen": old.get("heartbeat"),
+                "rss_mb": old.get("rss_mb"), "mem_available_mb": old.get("mem_available_mb")}
+
+    def _write(self, **extra):
+        from io_utils import atomic_write_json
+        data = {"pid": self.pid, "started": self.started, "heartbeat": self.clock(), "clean_exit": False, **read_mem(), **extra}
+        try:
+            atomic_write_json(str(self.path), data)
+        except OSError as e:
+            logger.warning(f"liveness: nie udalo sie zapisac {self.path.name}: {e}")
+
+    def tick(self):
+        self._write()
+
+    def begin(self):
+        if self.previous and self.previous["kind"] == "unexpected":
+            logger.warning(f"POPRZEDNIE URUCHOMIENIE ZAKONCZYLO SIE NIEOCZEKIWANIE (brak znacznika czystego zamkniecia): "
+                           f"ostatnia aktywnosc {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.previous.get('last_seen') or 0))}, "
+                           f"pamiec serwera {self.previous.get('rss_mb')} MB, wolna pamiec systemu {self.previous.get('mem_available_mb')} MB")
+        self._write()
+        return self.start()
+
+    def close(self, reason):
+        self.stop()
+        self._write(clean_exit=True, reason=reason, ended=self.clock())
 
 
 AWAKE_SECONDS = 90

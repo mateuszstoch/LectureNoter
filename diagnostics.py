@@ -6,6 +6,7 @@ HINTS = [
     (r"libcublas|libcudnn|cudnn|cublas", "Brak bibliotek CUDA (cuBLAS/cuDNN): uruchom `pip install -r requirements.txt` w aktywnym .venv."),
     (r"out of memory|CUDA failed with error out of memory|OutOfMemory", "Brak pamieci GPU: zamknij inne programy uzywajace GPU lub uzyj profilu 8gb."),
     (r"no CUDA-capable device|CUDA driver version is insufficient|cuda.*not available|Could not load.*cuda", "GPU niedostepne w WSL: sprawdz `nvidia-smi`, sterownik NVIDIA w Windowsie i wsparcie CUDA."),
+    (r"runner|unexpectedly stopped|terminated|exit status|HTTP 500|Ollama zwrocila blad", "Proces modelu w Ollamie padl (zwykle brak VRAM/RAM, zbyt duzy obraz albo blad sterownika). Zamknij inne programy uzywajace GPU, zmniejsz vlm.max_side w config.yaml, a przyczyne sprawdz w logu Ollamy (np. `journalctl -u ollama` albo okno `ollama serve`)."),
     (r"No module named", "Brak pakietu Pythona: uruchom `pip install -r requirements.txt` w aktywnym .venv."),
     (r"Connection refused|Max retries exceeded|Ollama niedostepna|Serwer Ollama nie odpowiada", "Ollama nie odpowiada: uruchom `ollama serve` (w WSL)."),
     (r"ollama pull", "Brakuje modelu w Ollamie: wykonaj podane `ollama pull ...`."),

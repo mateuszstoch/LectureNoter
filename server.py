@@ -1,9 +1,11 @@
 """LectureNoter: serwer API (FastAPI) dla interfejsu. Nasluchuje tylko na 127.0.0.1."""
 import argparse
 import asyncio
+import faulthandler
 import json
 import logging
 import os
+import signal
 from pathlib import Path
 
 import contextlib
@@ -11,6 +13,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 
 import uvicorn
 import yaml
@@ -32,7 +35,7 @@ from ui.chat import ChatError, ChatService, ChatStore, export_markdown
 from ui.folders import FolderError, FolderStore
 from ui.jobs import JobError, JobManager
 from ui.library import Library, LibraryError
-from ui.lifecycle import AutoExit, ClientTracker, KeepAwake
+from ui.lifecycle import AutoExit, ClientTracker, KeepAwake, Liveness, read_mem
 from ui.search import SearchIndex
 from run_state import is_live, read_run_state
 
@@ -106,7 +109,7 @@ def tail_lines(path, n=200):
 
 
 def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, extra_hosts=(), ollama=None,
-               auto_exit=False, idle_grace=30.0, startup_grace=180.0):
+               auto_exit=False, idle_grace=120.0, startup_grace=180.0):
     def C():
         return resolve(cfg)  # aktualna konfiguracja (przy LiveConfig przeladowana po zmianie pliku)
 
@@ -132,7 +135,11 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
             jm.start()
             loops.append(KeepAwake(is_busy).start())  # komputer nie zasypia w trakcie przetwarzania
             if auto_exit:
-                loops.append(AutoExit(tracker, is_busy, lambda: app.state.request_exit(), idle_grace, startup_grace).start())
+                def exit_now():
+                    app.state.exit_reason = ae.reason or "auto-exit"
+                    app.state.request_exit()
+                ae = AutoExit(tracker, is_busy, exit_now, idle_grace, startup_grace)
+                loops.append(ae.start())
         yield
         for lp in loops:
             lp.stop()
@@ -145,6 +152,7 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
     jm.set_preempt(chat.preempt)  # zadanie czekajace na GPU zwalnia model czatu (gdy ten nie generuje)
     app.state.chat, app.state.tracker, app.state.is_busy = chat, tracker, is_busy
     app.state.auto_exit = auto_exit
+    app.state.previous_exit, app.state.exit_reason, app.state.started_at = None, None, time.time()
     app.state.request_exit = lambda: None  # main() podstawia zatrzymanie serwera uvicorn
     # ochrona przed DNS rebinding: tylko lokalne nazwy hosta
     app.add_middleware(TrustedHostMiddleware,
@@ -174,7 +182,8 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
             pass
         return {"ollama": ollama, "gpu_holder": gpu.holder(), "profile": pick_profile(C()),
                 "pandoc": bool(shutil.which("pandoc")),
-                "auto_exit": auto_exit, "busy": is_busy(),
+                "auto_exit": auto_exit, "busy": is_busy(), "previous_exit": app.state.previous_exit,
+                "uptime_s": round(time.time() - app.state.started_at), **{k: v for k, v in read_mem().items() if k == "rss_mb"},
                 "paths": {"videos_dir": str(lib.videos_dir.resolve()), "work_dir": str(lib.work_dir.resolve())},
                 "vram": {"total_gb": total_vram_gb(), "used_gb": vram_used_gb()},
                 "models": {"vlm": C()["vlm"]["model"],
@@ -536,7 +545,15 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
         if is_busy() and not force:
             raise HTTPException(409, "Trwa przetwarzanie lub odpowiedz czatu. Anuluj zadania albo poczekaj na koniec.")
         logger.info("wylaczanie serwera na zadanie uzytkownika")
+        app.state.exit_reason = "zakonczono przyciskiem Zakoncz"
         threading.Timer(0.4, lambda: app.state.request_exit()).start()  # po wyslaniu odpowiedzi
+        return {"ok": True}
+
+    @app.post("/api/bye")
+    def bye():
+        """Wolane przez przegladarke przy zamykaniu okna (sendBeacon/pagehide): skraca karencje auto-exit. Bez naglowka
+        ochronnego, bo sendBeacon nie pozwala go ustawic; skutek jest niegrozny (serwer bez okna i tak by sie wylaczyl)."""
+        tracker.bye()
         return {"ok": True}
 
     @app.get("/api/server-log")
@@ -573,6 +590,21 @@ class InterceptHandler(logging.Handler):
         logger.opt(exception=record.exc_info).log(level, record.getMessage())
 
 
+class LoggingServer(uvicorn.Server):
+    """uvicorn z zapisem przyczyny zamkniecia (sygnal od systemu/uzytkownika zostawia slad w logu)."""
+
+    def handle_exit(self, sig, frame):
+        name = signal.Signals(sig).name if sig else "?"
+        logger.warning(f"otrzymano sygnal {name}: zamykam serwer")
+        state = self.config.app.state
+        if not getattr(state, "exit_reason", None):
+            state.exit_reason = f"sygnal {name}"
+        lv = getattr(state, "liveness", None)
+        if lv:  # uvicorn moze zakonczyc proces samym sygnalem przed 'finally': znacznik czystego zamkniecia zapisujemy tu
+            lv.close(state.exit_reason)
+        super().handle_exit(sig, frame)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="127.0.0.1")
@@ -580,7 +612,8 @@ def main():
     ap.add_argument("--config", default=str(ROOT / "config.yaml"))
     ap.add_argument("--auto-exit", action="store_true", default=os.environ.get("LECTURENOTER_AUTO_EXIT") == "1",
                     help="wylacz serwer po zamknieciu okna aplikacji (gdy nic nie jest przetwarzane)")
-    ap.add_argument("--idle-grace", type=float, default=30.0, help="sekundy bez okna aplikacji przed wylaczeniem")
+    ap.add_argument("--idle-grace", type=float, default=120.0,
+                    help="sekundy zerwanego polaczenia okna przed wylaczeniem (po jawnym zamknieciu okna: 15 s)")
     ap.add_argument("--startup-grace", type=float, default=180.0, help="sekundy oczekiwania na pierwsze okno po starcie")
     args = ap.parse_args()
     cfg = LiveConfig(args.config)
@@ -588,13 +621,31 @@ def main():
     work_dir.mkdir(parents=True, exist_ok=True)
     logger.add(work_dir / "server.log", rotation="5 MB", retention=3, encoding="utf-8", enqueue=True)
     logging.basicConfig(handlers=[InterceptHandler()], level=logging.INFO, force=True)
-    logger.info(f"LectureNoter: start serwera na {args.host}:{args.port}" + (" (auto-exit)" if args.auto_exit else ""))
+    crash_log = open(work_dir / "server.crash.log", "a", encoding="utf-8")
+    faulthandler.enable(crash_log)  # fatalne bledy procesu (np. SIGSEGV/SIGABRT w bibliotece natywnej) zostawiaja traceback
+    liveness = Liveness(work_dir / "server.state.json")
+    mem = read_mem()
+    logger.info(f"LectureNoter: start serwera na {args.host}:{args.port} pid {os.getpid()}"
+                + (" (auto-exit)" if args.auto_exit else "") + f", pamiec: serwer {mem['rss_mb']} MB, wolna w systemie {mem['mem_available_mb']} MB")
     app = create_app(cfg, auto_exit=args.auto_exit, idle_grace=args.idle_grace, startup_grace=args.startup_grace)
-    server = uvicorn.Server(uvicorn.Config(app, host=args.host, port=args.port, log_level="info", log_config=None,
-                                           access_log=False, timeout_graceful_shutdown=2))  # nie czekaj na otwarte strumienie SSE
+    app.state.previous_exit, app.state.liveness = liveness.previous, liveness
+    server = LoggingServer(uvicorn.Config(app, host=args.host, port=args.port, log_level="info", log_config=None,
+                                          access_log=False, timeout_graceful_shutdown=2))  # nie czekaj na otwarte strumienie SSE
     app.state.request_exit = lambda: setattr(server, "should_exit", True)
-    server.run()
-    logger.info("LectureNoter: serwer zakonczyl prace")
+    if hasattr(signal, "SIGHUP"):  # zamkniecie terminala nie zabija serwera po cichu
+        signal.signal(signal.SIGHUP, lambda s, f: server.handle_exit(s, f))
+    liveness.begin()
+    reason = None
+    try:
+        server.run()
+        reason = app.state.exit_reason or "zakonczenie przez uvicorn"
+    except BaseException as e:  # nieobsluzony wyjatek w serwerze: zapisz przyczyne zamiast znikac po cichu
+        reason = f"wyjatek: {type(e).__name__}: {e}"
+        logger.exception("serwer zakonczyl sie wyjatkiem")
+        raise
+    finally:
+        liveness.close(reason or "nieznana")
+        logger.info(f"LectureNoter: serwer zakonczyl prace ({reason})")
 
 
 if __name__ == "__main__":

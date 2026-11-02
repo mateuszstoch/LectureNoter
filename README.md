@@ -40,7 +40,7 @@ Uruchom `scripts\start.bat` (dwuklik albo skrót na Pulpicie/pasku zadań). Skry
 2. uruchamia serwer w WSL **w tle, bez okna terminala** (pierwsze uruchomienie instaluje zależności i trwa kilka minut; postęp widać w konsoli skryptu),
 3. otwiera aplikację w oknie Edge/Chrome bez paska przeglądarki, a konsola skryptu się zamyka.
 
-**Wyłączanie.** Serwer wyłącza się sam ok. 30 s po zamknięciu okna aplikacji. Dopóki trwa przetwarzanie lub odpowiedź czatu, działa dalej nawet bez okna i wyłącza się po jej zakończeniu. Możesz też użyć linku „Zakończ” w nagłówku aplikacji (odmówi, gdy coś się przetwarza).
+**Wyłączanie.** Serwer wyłącza się sam ok. 15 s po zamknięciu okna aplikacji. Jeśli połączenie okna tylko się zerwie (uśpienie komputera lub karty, przerwa w sieci), czeka 2 minuty, żeby nie znikać spod otwartego okna (`--idle-grace`). Dopóki trwa przetwarzanie lub odpowiedź czatu, działa dalej nawet bez okna i wyłącza się po jej zakończeniu. Możesz też użyć linku „Zakończ” w nagłówku aplikacji (odmówi, gdy coś się przetwarza).
 
 **Komputer nie zasypia w trakcie pracy.** Na czas przetwarzania serwer prosi system o niewyłączanie komputera (ekran nadal może gasnąć). Jeśli mimo to serwer znika po wygaszeniu ekranu, sprawdź w Windows: Ustawienia → System → Zasilanie → „Uśpienie” ustaw na „Nigdy” (przynajmniej przy zasilaniu z sieci). Przerwane zadanie wznowisz z aplikacji (przycisk „Wznów”), bo wyniki częściowe są zachowane.
 
@@ -95,6 +95,14 @@ python main.py wyklad.mp4
 | `--status` | wypisz stan etapów i postęp jako JSON (nic nie uruchamia) |
 
 Ctrl+C przerywa pracę bezpiecznie (model zostaje rozładowany); ponowne uruchomienie wznawia. Brak ścieżki audio w pliku: ASR jest pomijany, a notatki powstają tylko z tablicy.
+
+## Błędy Ollamy przy odczycie tablicy (HTTP 500)
+
+Błąd 500 zwykle oznacza, że proces modelu w Ollamie padł (brak VRAM/RAM, bardzo duży obraz, wyciek pamięci po wielu obrazach). Etap VLM jest na to odporny: treść błędu z Ollamy trafia do komunikatu, klatka jest ponawiana po odtworzeniu modelu i z coraz mniejszym obrazem (100%, 75%, 55% `vlm.max_side`), model jest profilaktycznie odświeżany co `vlm.reload_every` klatek, a pojedyncza klatka, której nie da się opisać, jest pomijana (do `vlm.max_failed_frames`, nie więcej niż 20% klatek; wykład kończy się wtedy normalnie, a lista pominiętych klatek jest w logu). Po 5 kolejnych błędach etap zatrzymuje się z komunikatem, żeby nie palić godzin na niedziałającej Ollamie, a gotowe klatki zostają (wznowienie je pomija). Parametry w `config.yaml` (`vlm`): `max_side`, `num_ctx`, `reload_every`, `frame_retries`, `max_failed_frames`. Jeśli problem wraca, zmniejsz `max_side` (np. do 1024) i sprawdź log Ollamy (`journalctl -u ollama` albo okno `ollama serve`).
+
+## Gdy serwer przestaje działać
+
+Każde zamknięcie serwera zostawia ślad: przyczyna w `work/server.log` (sygnał, auto-exit, przycisk „Zakończ”, wyjątek), a serwer co 10 s zapisuje stan (`work/server.state.json`: czas, pamięć procesu, wolna pamięć systemu). Jeśli poprzednie uruchomienie skończyło się nagle (zabicie procesu przez system przy braku pamięci, uśpienie lub zamknięcie WSL), po następnym starcie aplikacja pokazuje komunikat z czasem ostatniej aktywności i ostrzeżenie trafia do logu. Błędy fatalne procesu (np. awaria biblioteki natywnej) zapisują traceback do `work/server.crash.log`. Zadania przetwarzania działają w osobnych procesach, więc przeżywają zatrzymanie serwera, a ich błędy widać w „Szczegóły błędu i logi”.
 
 ## Jakość notatek (pętle powtórzeń modelu)
 

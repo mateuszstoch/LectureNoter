@@ -16,7 +16,11 @@ _warned_no_vram = False
 
 
 class OllamaError(RuntimeError):
-    pass
+    """Blad komunikacji z Ollama. fatal=True: ponawianie nie ma sensu (brak modelu, brak polaczenia z serwerem)."""
+
+    def __init__(self, message, status=None, fatal=False):
+        super().__init__(message)
+        self.status, self.fatal = status, fatal
 
 
 class OllamaClient:
@@ -26,22 +30,38 @@ class OllamaClient:
             host = f"http://{host}"
         self.host, self.timeout, self.retries = host.rstrip("/"), timeout, retries
 
+    @staticmethod
+    def _detail(r):
+        """Tresc bledu z odpowiedzi Ollamy ({'error': ...}); to w niej jest prawdziwa przyczyna 500."""
+        try:
+            return str(r.json().get("error", "")).strip() or r.text[:300]
+        except ValueError:
+            return r.text[:300].strip()
+
     def _post(self, path, payload):
-        last = None
+        last, status = None, None
         for attempt in range(1, self.retries + 1):
             try:
                 r = requests.post(f"{self.host}{path}", json=payload, timeout=self.timeout)
-                if r.status_code == 404:
-                    raise OllamaError(f"model '{payload.get('model')}' niedostepny: uruchom `ollama pull {payload.get('model')}`")
-                r.raise_for_status()
-                return r.json()
-            except OllamaError:
-                raise
-            except requests.RequestException as e:
-                last = e
+            except requests.RequestException as e:  # brak polaczenia / timeout: ponawiamy
+                last, status = str(e), None
                 logger.warning(f"Ollama {path} proba {attempt}/{self.retries}: {e}")
                 time.sleep(2 * attempt)
-        raise OllamaError(f"Ollama niedostepna lub blad zadania: {last}")
+                continue
+            if r.status_code == 404:
+                model = payload.get("model")
+                raise OllamaError(f"model '{model}' niedostepny: uruchom `ollama pull {model}`", status=404, fatal=True)
+            if r.status_code >= 500:  # np. 'model runner has unexpectedly stopped': ponawiamy, ale zachowujemy tresc bledu
+                last, status = f"HTTP {r.status_code}: {self._detail(r)}", r.status_code
+                logger.warning(f"Ollama {path} proba {attempt}/{self.retries}: {last}")
+                time.sleep(2 * attempt)
+                continue
+            if r.status_code >= 400:
+                raise OllamaError(f"Ollama HTTP {r.status_code}: {self._detail(r)}", status=r.status_code)
+            return r.json()
+        if status is None:
+            raise OllamaError(f"Ollama niedostepna lub blad polaczenia: {last}", fatal=True)
+        raise OllamaError(f"Ollama zwrocila blad {last}", status=status)
 
     def check(self):
         try:
