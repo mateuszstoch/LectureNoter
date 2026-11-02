@@ -10,6 +10,7 @@ import uvicorn
 import yaml
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -20,6 +21,15 @@ from ui.jobs import JobError, JobManager
 from ui.library import Library, LibraryError
 
 ROOT = Path(__file__).resolve().parent
+
+
+class NoCacheStatic(StaticFiles):
+    """Pliki aplikacji zawsze rewalidowane (service worker i tak trzyma kopie na tryb offline)."""
+
+    async def get_response(self, path, scope):
+        r = await super().get_response(path, scope)
+        r.headers["Cache-Control"] = "no-cache"
+        return r
 
 
 class AddVideo(BaseModel):
@@ -92,6 +102,7 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
         except Exception:
             pass
         return {"ollama": ollama, "gpu_holder": gpu.holder(), "profile": pick_profile(cfg),
+                "paths": {"videos_dir": str(lib.videos_dir.resolve()), "work_dir": str(lib.work_dir.resolve())},
                 "vram": {"total_gb": total_vram_gb(), "used_gb": vram_used_gb()},
                 "models": {"vlm": cfg["vlm"]["model"],
                            "llm": cfg["profiles"][pick_profile(cfg)]["llm_model"]}}
@@ -204,6 +215,8 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
                         yield f"data: {json.dumps(l, ensure_ascii=False)}\n\n"
         return StreamingResponse(gen(), media_type="text/event-stream")
 
+    # statyczny front (PWA) na koncu, zeby nie przykrywal tras /api
+    app.mount("/", NoCacheStatic(directory=ROOT / "ui" / "static", html=True), name="static")
     return app
 
 
@@ -213,7 +226,8 @@ def main():
     ap.add_argument("--port", type=int, default=8000)
     args = ap.parse_args()
     cfg = yaml.safe_load(open(ROOT / "config.yaml", encoding="utf-8"))
-    uvicorn.run(create_app(cfg), host=args.host, port=args.port, log_level="info")
+    uvicorn.run(create_app(cfg), host=args.host, port=args.port, log_level="info",
+                timeout_graceful_shutdown=2)  # nie czekaj w nieskonczonosc na otwarte strumienie SSE
 
 
 if __name__ == "__main__":

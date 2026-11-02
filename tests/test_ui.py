@@ -275,3 +275,14 @@ def test_api_stream_and_logs_once(client, env):
     (wd / "pipeline.log").write_text("linia 1\nlinia 2\n", encoding="utf-8")
     logs = c.get("/api/videos/ok/logs", params={"once": "true"}).text
     assert "linia 1" in logs and "linia 2" in logs
+
+
+def test_static_frontend_served_and_api_not_shadowed(client):
+    c, _ = client
+    r = c.get("/")
+    assert r.status_code == 200 and "LectureNoter" in r.text and r.headers["cache-control"] == "no-cache"
+    assert c.get("/manifest.webmanifest").json()["display"] == "standalone"
+    assert c.get("/sw.js").status_code == 200 and c.get("/app.js").status_code == 200
+    assert c.get("/icons/icon-512.png").headers["content-type"] == "image/png"
+    assert c.get("/api/health").json() == {"ok": True}
+    assert c.get("/nie-ma-takiego-pliku").status_code == 404

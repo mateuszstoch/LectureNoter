@@ -58,7 +58,10 @@ Brak ścieżki audio w pliku: ASR jest pomijany, a notatki powstają tylko z tab
 python server.py            # http://127.0.0.1:8000 (tylko lokalnie)
 ```
 
-Filmy wrzucaj do katalogu `videos/` (dowiązania symboliczne działają). API: lista plików i filmów, trwała kolejka zadań (jedno naraz), regeneracja etapów, anulowanie, strumień stanu (`/api/stream`) i logów. Interfejs graficzny (PWA) jest w przygotowaniu, patrz `PLAN_UI.md`.
+Filmy wrzucaj do katalogu `videos/` (dowiązania symboliczne działają). API: lista plików i filmów, trwała kolejka zadań (jedno naraz), regeneracja etapów, anulowanie, strumień stanu (`/api/stream`) i logów. 
+Interfejs (PWA) jest pod `http://localhost:8000`: lista filmów z postępem etapów, dodawanie z `videos/`, kolejka, regeneracja etapów i logi. Notatki i czat: w przygotowaniu, patrz `PLAN_UI.md`.
+
+Jako aplikację zainstalujesz w Edge/Chrome (menu → „Zainstaluj aplikację”). Na Windows 11 + WSL2 skrót `scripts\start.bat` uruchamia serwer w WSL i otwiera okno aplikacji (domyślnie projekt w `~/LectureNoter`, zmień zmienną `LECTURENOTER_DIR`).
 
 ## Windows 11 (WSL2)
 
