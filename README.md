@@ -89,6 +89,10 @@ python main.py wyklad.mp4
 
 Ctrl+C przerywa pracę bezpiecznie (model zostaje rozładowany); ponowne uruchomienie wznawia. Brak ścieżki audio w pliku: ASR jest pomijany, a notatki powstają tylko z tablicy.
 
+## Wygląd
+
+Interfejs ma styl zeszytu akademickiego: papierowe tło, tusz i jeden czerwony akcent, krój szeryfowy dla treści (tytuły, notatki, czat), bezszeryfowy dla elementów interfejsu i monospace dla czasów. Jasny i ciemny motyw wybierają się według ustawień systemu. Czcionki (Source Serif 4, IBM Plex Sans, IBM Plex Mono; licencja SIL OFL, pliki w `ui/static/fonts/`) są wgrane lokalnie, więc aplikacja działa bez internetu. Ikony aplikacji generuje `python tools/make_icons.py`.
+
 ## Logi i diagnostyka błędów
 
 - **W aplikacji:** przy błędzie przetwarzania film pokazuje przyczynę (np. brakujący model, brak bibliotek CUDA) wraz z wskazówką naprawy oraz przycisk „Szczegóły błędu i logi” (stderr procesu etapu, `pipeline.log`, wyjście zadania). Link „Logi” w nagłówku pokazuje log serwera.

@@ -118,7 +118,7 @@ function mountNotesTab(container, videoId) {
       data = await api(`/api/videos/${videoId}/notes`);
     } catch (e) {
       data = null;
-      root.replaceChildren(h("div", { class: "card empty" }, e.message, h("div", { style: "margin-top:8px" }, h("a", { href: `#/video/${videoId}` }, "Przejdź do przetwarzania"))));
+      root.replaceChildren(h("div", { class: "empty" }, e.message, h("div", { style: "margin-top:8px" }, h("a", { href: `#/video/${videoId}` }, "Przejdź do przetwarzania"))));
       return;
     }
     show();
@@ -145,7 +145,7 @@ function mountNotesTab(container, videoId) {
     mode = "view";
     const body = h("article", { class: "notes-body", id: "nbody" });
     const toc = renderNotesInto(body, data.md, videoId);
-    const tocEl = h("nav", { class: "toc", "aria-label": "Spis treści" }, h("div", { class: "small muted", style: "margin-bottom:6px" }, "Spis treści"),
+    const tocEl = h("nav", { class: "toc", "aria-label": "Spis treści" }, h("div", { class: "label" }, "Spis treści"),
       toc.filter((t) => t.level <= 3).map((t) => h("a", { class: `toc-l${t.level}`, href: "#", onclick: (e) => { e.preventDefault(); document.getElementById(t.id).scrollIntoView({ behavior: "smooth", block: "start" }); } }, t.text)));
     root.replaceChildren(toolbar(), h("div", { class: "notes-layout" }, tocEl, body));
   }
@@ -237,14 +237,14 @@ function mountMaterialsTab(container, videoId) {
   let transcript = [], frames = [];
 
   function framesView() {
-    if (!frames.length) return h("div", { class: "card empty" }, "Brak klatek. Uruchom etap „Klatki z tablicy”.");
+    if (!frames.length) return h("div", { class: "empty" }, "Brak klatek. Uruchom etap „Klatki z tablicy”.");
     return h("div", { class: "grid-frames" }, frames.map((f) => h("button", { class: "thumb", title: fmtDur(f.timestamp), onclick: () => openContextDialog(videoId, f.timestamp) },
       h("img", { src: `/api/videos/${videoId}/frames/${f.file}`, alt: `Tablica ${fmtDur(f.timestamp)}`, loading: "lazy" }),
       h("span", { class: "small" }, fmtDur(f.timestamp)))));
   }
 
   function transcriptView() {
-    if (!transcript.length) return h("div", { class: "card empty" }, "Brak transkryptu (etap „Transkrypcja mowy” nie był wykonany lub film nie ma audio).");
+    if (!transcript.length) return h("div", { class: "empty" }, "Brak transkryptu (etap „Transkrypcja mowy” nie był wykonany lub film nie ma audio).");
     const list = h("div", { class: "segs tall" });
     const hitsEl = h("span", { class: "muted small" });
     const draw = (q) => {

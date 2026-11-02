@@ -100,7 +100,7 @@ function toast(msg) {
 // ---------- okno dialogowe ----------
 function openDialog(...content) {
   const d = $("#dlg");
-  d.replaceChildren(...content);
+  d.replaceChildren(...kids(content)); // puste (null) argumenty pomijamy: replaceChildren zamieniłby je na tekst "null"
   if (!d.open) d.showModal();
   return d;
 }
@@ -154,25 +154,38 @@ function renderSys() {
 }
 
 // ---------- widok: biblioteka ----------
+function stepPct(st) {
+  const p = st.progress;
+  return st.status === "running" && p && p.total ? Math.min(100, (100 * p.done) / p.total) : 0;
+}
+
+function trackOf(v) {
+  return h("div", { class: "track" }, STAGES.map((s, i) => {
+    const st = v.stages[s];
+    const note = st.status === "running" && st.progress && st.progress.total ? `${Math.round(stepPct(st))}%` : STATUS_PL[st.status];
+    return h("div", { class: `step ${st.status}` }, h("i", { style: `--p:${stepPct(st)}%` }),
+      h("b", {}, `${i + 1}. ${STAGE_SHORT[s]}`), h("span", {}, note));
+  }));
+}
+
 function videoCard(v) {
   const run = Object.entries(v.stages).find(([, s]) => s.status === "running");
   const job = activeJob(v.id);
-  return h("div", { class: "card" },
-    h("div", { class: "row spread" },
+  return h("article", { class: "lecture" },
+    h("div", { class: "lecture-head" },
       h("div", {},
         h("a", { class: "vtitle", href: `#/video/${v.id}` }, v.title || v.id),
-        h("div", { class: "muted small" },
+        h("div", { class: "meta" },
           [v.duration != null ? fmtDur(v.duration) : null, fmtDate(v.created), v.has_audio === false ? "bez audio" : null,
-            v.video_exists ? null : "brak pliku wideo"].filter(Boolean).join(" · "))),
-      h("div", { class: "row", style: "gap:8px" },
+            v.video_exists ? null : "brak pliku wideo"].filter(Boolean).join("  ·  "))),
+      h("div", { class: "lecture-side" },
         job && job.status === "queued" ? chip("queued") : chip(v.overall === "idle" ? "pending" : v.overall,
           v.overall === "idle" ? STATUS_PL.idle : null),
         h("button", { class: "small danger", title: job ? "Najpierw anuluj zadanie" : "Usuń wykład", "aria-label": `Usuń wykład ${v.title || v.id}`,
           disabled: !!job || v.overall === "running", onclick: () => openDeleteDialog(v) }, "Usuń"))),
-    h("div", { class: "pills" }, STAGES.map((s) => h("div", { class: `pill ${v.stages[s].status}` },
-      h("b", {}, STAGE_SHORT[s]), STATUS_PL[v.stages[s].status]))),
-    run ? h("div", { class: "small muted", style: "margin-top:8px" }, progressText(run[0], run[1].progress), progressBar(run[1].progress)) : null,
-    v.error && v.overall === "error" ? h("div", { class: "small", style: "margin-top:8px;color:var(--err)" }, v.error) : null);
+    trackOf(v),
+    run && run[1].progress && run[1].progress.message ? h("div", { class: "meta", style: "margin-top:8px" }, progressText(run[0], run[1].progress)) : null,
+    v.error && v.overall === "error" ? h("div", { class: "errline" }, v.error) : null);
 }
 
 function queuePanel() {
@@ -192,33 +205,35 @@ function queuePanel() {
     j.status === "queued" || j.status === "running"
       ? h("button", { class: "small danger", title: "Anuluj", onclick: () => cancelJob(j.id) }, "✕") : null);
   const empty = !running.length && !queued.length;
-  return h("div", { class: "card" },
+  return h("aside", { class: "queue" },
     h("div", { class: "row spread" }, h("h2", {}, "Kolejka"),
       h("button", { class: "small", onclick: () => togglePause() }, q.paused ? "Wznów kolejkę" : "Wstrzymaj")),
     q.paused ? h("div", { class: "small", style: "color:var(--warn)" }, "Kolejka wstrzymana: nowe zadania nie startują.") : null,
     q.blocked_by ? h("div", { class: "small", style: "color:var(--warn)" }, `GPU zajęte przez: ${q.blocked_by.owner}. Zadanie ruszy po zwolnieniu.`) : null,
     empty ? h("div", { class: "muted small" }, "Brak zadań w kolejce.") : null,
     running.map((j) => row(j, -1)), queued.map(row),
-    recent.length ? h("details", { style: "margin-top:8px" }, h("summary", { class: "small" }, "Ostatnio zakończone"),
-      recent.map((j) => h("div", { class: "job" }, h("div", { class: "name" }, title(j), j.error ? h("div", { class: "small", style: "color:var(--err)" }, j.error) : null), chip(j.status)))) : null);
+    recent.length ? h("details", { style: "margin-top:10px" }, h("summary", { class: "small" }, "Ostatnio zakończone"),
+      recent.map((j) => h("div", { class: "job" }, h("div", { class: "name" }, title(j), j.error ? h("div", { class: "small", style: "color:var(--accent)" }, j.error) : null), chip(j.status)))) : null);
 }
 
 function renderLibrary() {
   const view = $("#view");
   const list = state.videos.length
-    ? h("div", { class: "list" }, state.videos.map(videoCard))
-    : h("div", { class: "card empty" }, state.loaded ? "Nie dodano jeszcze żadnego filmu. Kliknij „Dodaj film”, aby wybrać nagranie z katalogu." : "Ładowanie…");
+    ? h("div", { class: "lectures" }, state.videos.map(videoCard))
+    : h("div", { class: "empty" }, state.loaded
+      ? ["Jeszcze nic tu nie ma.", h("div", { class: "small", style: "margin-top:8px" }, "Wrzuć nagranie do katalogu ", h("code", {}, "videos/"), " i dodaj je przyciskiem u góry.")]
+      : "Ładowanie…");
   view.replaceChildren(
-    h("div", { class: "row spread", style: "margin-bottom:14px" },
-      h("div", {}, h("h1", {}, "Wykłady"), h("div", { class: "muted small" }, "Filmy przetwarzane lokalnie: transkrypcja, odczyt tablicy, notatki.")),
-      h("button", { class: "primary", onclick: openAddDialog }, "+ Dodaj film")),
-    h("div", { class: "layout" }, list, queuePanel()));
+    h("div", { class: "page-head" },
+      h("div", {}, h("h1", {}, "Wykłady"), h("p", {}, "Nagrania zamieniane w notatki, lokalnie na tym komputerze.")),
+      h("button", { class: "primary", onclick: openAddDialog }, "Dodaj nagranie")),
+    h("div", { class: "layout", style: "margin-top:22px" }, list, queuePanel()));
 }
 
 // ---------- dodawanie filmu ----------
 async function openAddDialog() {
   const body = h("div", {}, h("div", { class: "muted" }, "Ładowanie listy plików…"));
-  openDialog(h("h2", {}, "Dodaj film z katalogu"), body);
+  openDialog(h("h2", {}, "Dodaj nagranie z katalogu"), body);
   let files;
   try { files = await api("/api/library/files"); } catch (e) { body.textContent = e.message; return; }
   const dir = state.system && state.system.paths ? state.system.paths.videos_dir : "videos/";
@@ -350,7 +365,7 @@ async function openDeleteDialog(v) {
   const lost = ["transkrypt, klatki z tablicy i opisy (VLM)", "wygenerowane notatki"];
   if (p.has_edited_notes) lost.push("Twoja edytowana wersja notatek i jej historia");
   if (p.chat_count) lost.push(`rozmowy czatu (${p.chat_count})`);
-  body.replaceChildren(
+  body.replaceChildren(...kids(
     h("p", {}, h("b", {}, v.title || v.id), `: usunięte zostaną dane przetwarzania (${mb}) bez możliwości przywrócenia:`),
     h("ul", {}, lost.map((x) => h("li", {}, x))),
     p.has_edited_notes || p.chat_count ? h("div", { class: "small", style: "color:var(--warn)" }, "Jeśli chcesz zachować notatki, najpierw wyeksportuj je (zakładka Notatki → Markdown/Word/PDF).") : null,
@@ -367,7 +382,7 @@ async function openDeleteDialog(v) {
           await refresh();
           toast(`Usunięto wykład „${v.title || v.id}”.`);
         } catch (e) { closeDialog(); toast(e.message); }
-      } }, "Usuń wykład")));
+      } }, "Usuń wykład"))));
 }
 
 async function openDiagnostics(videoId) {
@@ -379,7 +394,7 @@ async function openDiagnostics(videoId) {
     h("pre", { class: "logs" }, lines.join("\n"))) : null);
   body.replaceChildren(...kids(
     h("div", { class: "small muted" }, `Etap: ${d.stage ? STAGE_NAME[d.stage] || d.stage : "?"} · stan: ${d.status || "?"}`),
-    d.error ? h("p", { style: "color:var(--err);overflow-wrap:anywhere" }, d.error) : null,
+    d.error ? h("p", { style: "color:var(--accent);overflow-wrap:anywhere" }, d.error) : null,
     d.hint ? h("div", { class: "banner warn", style: "margin:8px 0" }, `Wskazówka: ${d.hint}`) : null,
     block("Log procesu etapu (stderr)", d.worker_log), block("Log przetwarzania (pipeline.log)", d.pipeline_log), block("Wyjście zadania (job.out)", d.job_output),
     !d.worker_log.length && !d.pipeline_log.length && !d.job_output.length ? h("div", { class: "muted small" }, "Brak zapisanych logów.") : null));
@@ -399,7 +414,7 @@ function updateDetail() {
   const head = $("#dhead"), stages = $("#dstages");
   if (!head) return;
   if (!v) {
-    head.replaceChildren(h("a", { href: "#/" }, "← Wróć"), h("h1", {}, state.loaded ? "Nie znaleziono filmu" : "Ładowanie…"));
+    head.replaceChildren(h("a", { href: "#/" }, "← Wróć"), h("h1", {}, state.loaded ? "Nie znaleziono wykładu" : "Ładowanie…"));
     if (stages) stages.replaceChildren();
     return;
   }
@@ -408,10 +423,10 @@ function updateDetail() {
   const resumable = ["error", "cancelled", "interrupted", "stale"].includes(v.overall)
     || Object.values(v.stages).some((s) => ["stale", "pending"].includes(s.status) && v.overall !== "running");
   head.replaceChildren(...kids(
-    h("a", { href: "#/", class: "small" }, "← Wykłady"),
-    h("div", { class: "row spread", style: "margin-top:6px" },
+    h("a", { href: "#/", class: "back" }, "← Wykłady"),
+    h("div", { class: "row spread detail-head" },
       h("div", {}, h("h1", {}, v.title || v.id),
-        h("div", { class: "muted small" }, [v.duration != null ? fmtDur(v.duration) : null, fmtDate(v.created), v.has_audio === false ? "bez audio" : null, v.profile ? `profil ${v.profile}` : null].filter(Boolean).join(" · "))),
+        h("div", { class: "meta" }, [v.duration != null ? fmtDur(v.duration) : null, fmtDate(v.created), v.has_audio === false ? "bez audio" : null, v.profile ? `profil ${v.profile}` : null].filter(Boolean).join("  ·  "))),
       h("div", { class: "row" },
         job ? h("button", { class: "danger", onclick: () => cancelJob(job.id) }, job.status === "running" ? "Zatrzymaj" : "Usuń z kolejki") : null,
         !job && resumable ? h("button", { class: "primary", onclick: () => runVideo(v.id, {}) }, v.overall === "idle" ? "Uruchom" : "Wznów") : null,
@@ -423,7 +438,7 @@ function updateDetail() {
       h("div", { style: "margin-top:8px" }, h("button", { class: "small", onclick: () => openDiagnostics(v.id) }, "Szczegóły błędu i logi"))) : null,
     v.overall === "interrupted" ? h("div", { class: "banner warn", style: "margin:10px 0 0" }, "Poprzednie uruchomienie zostało przerwane (np. wyłączenie WSL). Wznów, aby kontynuować od ostatniego checkpointu.") : null));
   if (!stages) return;
-  stages.replaceChildren(h("div", { class: "card" }, STAGES.map((s) => {
+  stages.replaceChildren(h("div", { class: "stages" }, STAGES.map((s) => {
     const st = v.stages[s];
     const showBar = st.progress && (st.status === "running" || st.status === "interrupted" || st.status === "cancelled" || st.status === "error");
     return h("div", { class: "stage" },
@@ -449,7 +464,7 @@ function renderServerLogs() {
       if (near) pre.scrollTop = pre.scrollHeight;
     } catch (e) { pre.textContent = e.message; }
   };
-  $("#view").replaceChildren(h("a", { href: "#/", class: "small" }, "← Wykłady"), h("h1", { style: "margin-top:6px" }, "Logi serwera"),
+  $("#view").replaceChildren(h("a", { href: "#/", class: "back" }, "← Wykłady"), h("h1", { style: "margin-top:10px" }, "Logi serwera"),
     h("div", { class: "row spread", style: "margin-bottom:8px" }, path, h("button", { class: "small", onclick: load }, "Odśwież")),
     pre);
   load();

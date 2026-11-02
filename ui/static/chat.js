@@ -72,7 +72,7 @@ function mountChatTab(container, videoId) {
 
   function renderSide() {
     side.replaceChildren(
-      h("button", { class: "primary", style: "width:100%", disabled: !!streaming, onclick: newChat }, "+ Nowa rozmowa"),
+      h("button", { class: "primary", disabled: !!streaming, onclick: newChat }, "Nowa rozmowa"),
       h("div", { class: "chat-list" }, chats.length ? chats.map((c) => h("div", { class: `chat-item${current && current.id === c.id ? " active" : ""}` },
         h("a", { href: "#", onclick: (e) => { e.preventDefault(); if (!streaming) openChat(c.id); }, title: c.title }, c.title),
         h("button", { class: "small danger", title: "Usuń rozmowę", disabled: !!streaming, onclick: () => delChat(c.id) }, "✕")))
@@ -105,10 +105,10 @@ function mountChatTab(container, videoId) {
   }
 
   function bubble(m) {
-    if (m.role === "user") return h("div", { class: "msg user" }, h("div", { class: "bubble" }, m.content));
+    if (m.role === "user") return h("div", { class: "msg user" }, h("div", { class: "who" }, "Ty"), h("div", { class: "bubble" }, m.content));
     const body = h("div", { class: "bubble md notes-body" });
     setAssistant(body, m.content);
-    return h("div", { class: "msg assistant" }, body, m.stopped ? h("div", { class: "muted small" }, "odpowiedź przerwana") : null, sourceChips(m.sources),
+    return h("div", { class: "msg assistant" }, h("div", { class: "who" }, "Asystent"), body, m.stopped ? h("div", { class: "muted small" }, "odpowiedź przerwana") : null, sourceChips(m.sources),
       m.model ? h("div", { class: "muted small" }, m.model) : null);
   }
 
@@ -120,10 +120,10 @@ function mountChatTab(container, videoId) {
 
   function renderMessages() {
     if (!current) {
-      msgBox.replaceChildren(h("div", { class: "empty" }, "Wybierz rozmowę albo zacznij nową, wpisując pytanie poniżej."));
+      msgBox.replaceChildren(h("div", { class: "empty" }, "Wybierz rozmowę z listy albo zacznij nową, wpisując pytanie poniżej."));
     } else if (!current.messages.length) {
       msgBox.replaceChildren(h("div", { class: "empty" }, "Zadaj pytanie o ten wykład.",
-        h("div", { class: "row", style: "justify-content:center;margin-top:10px;gap:6px" },
+        h("div", { class: "row", style: "margin-top:12px;gap:8px" },
           ["Podsumuj ten wykład w punktach", "Jakie są najważniejsze definicje?", "Co było powiedziane o zaliczeniu?"].map((q) =>
             h("button", { class: "small", onclick: () => { input.value = q; send(); } }, q)))));
     } else {
@@ -148,7 +148,8 @@ function mountChatTab(container, videoId) {
     const body = h("div", { class: "bubble md notes-body" }, h("span", { class: "muted" }, "Ładowanie modelu i szukanie fragmentów…"));
     const srcBox = h("div", {});
     msgBox.querySelector(".empty")?.remove();
-    msgBox.append(h("div", { class: "msg user" }, h("div", { class: "bubble" }, text)), h("div", { class: "msg assistant" }, body, srcBox));
+    msgBox.append(h("div", { class: "msg user" }, h("div", { class: "who" }, "Ty"), h("div", { class: "bubble" }, text)),
+      h("div", { class: "msg assistant" }, h("div", { class: "who" }, "Asystent"), body, srcBox));
     msgBox.scrollTop = msgBox.scrollHeight;
     streaming = { controller: new AbortController() };
     refreshControls();
