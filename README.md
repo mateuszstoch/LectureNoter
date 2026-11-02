@@ -109,7 +109,7 @@ Mały model potrafi zapętlić się w powtórzeniach. Generator to wykrywa: pona
 
 ## Eksport i import wykładów (.lec)
 
-`.lec` to zwykłe archiwum ZIP z innym rozszerzeniem, służące do przenoszenia wykładów między komputerami. Zawiera `manifest.json` (tytuł, folder, `uid`) oraz w `data/`: transkrypt, klatki, odczyt tablicy, notatki (wszystkie wersje), czaty, quizy i stan etapów. Logi i pliki tymczasowe są pomijane. Film jest opcjonalny (domyślnie niedołączany).
+Plik `.lec` służy do przenoszenia wykładów między komputerami i instalacjami aplikacji; jest przeznaczony do wczytania w LectureNoter, a nie do ręcznej edycji. Zawiera `manifest.json` (tytuł, folder, `uid`) oraz w `data/`: transkrypt, klatki, odczyt tablicy, notatki (wszystkie wersje), czaty, quizy i stan etapów. Logi i pliki tymczasowe są pomijane. Film jest opcjonalny (domyślnie niedołączany).
 
 - **Eksport:** „Eksportuj” przy wykładzie → rozmiar i opcja „Dołącz plik wideo” → pasek postępu → pobranie. Zablokowany w trakcie przetwarzania.
 - **Import:** „Importuj” na liście lub przeciągnięcie pliku na stronę. Po sprawdzeniu archiwum wybierasz: zapis dołączonego filmu do `videos/` (bez nadpisywania), miejsce w bibliotece oraz sposób obsługi duplikatu (po `uid`): kopia, zastąpienie lub pominięcie.

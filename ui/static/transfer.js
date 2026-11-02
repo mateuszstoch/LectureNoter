@@ -1,5 +1,5 @@
 "use strict";
-// Eksport i import wykładów (.lec = zwykłe archiwum ZIP) oraz wskazanie pliku wideo.
+// Eksport i import wykładów (pliki .lec) oraz wskazanie pliku wideo.
 // Korzysta z pomocników z app.js i library.js (h, kids, api, toast, openDialog, closeDialog, state, refresh, folderLabel...).
 
 function fmtBytes(n) {
@@ -30,7 +30,7 @@ async function openExportDialog(v) {
   body.replaceChildren(
     h("p", { style: "margin-top:0" }, h("b", {}, v.title || v.id)),
     h("p", { class: "small muted" }, `Dane wykładu (transkrypt, klatki, odczyt tablicy, notatki wraz z edycjami i historią, rozmowy): ${fmtBytes(info.data_bytes)}, ${info.files} plików. `
-      + "Powstaje plik .lec, czyli zwykłe archiwum ZIP, które zaimportujesz na innym komputerze."),
+      + "Powstaje plik .lec, który zaimportujesz w LectureNoter na innym komputerze."),
     h("label", { class: "opt", style: "margin-top:10px" }, withVideo,
       h("span", {}, info.has_video ? `Dołącz plik wideo (${info.video_name}, ${fmtBytes(info.video_bytes)})` : "Plik wideo jest niedostępny, więc zostanie pominięty",
         h("div", { class: "muted small" }, "Bez filmu archiwum jest małe; wykład po imporcie działa (notatki, czat, materiały), a film można wskazać później."))),
