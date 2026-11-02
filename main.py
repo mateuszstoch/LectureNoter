@@ -13,6 +13,7 @@ from pathlib import Path
 import yaml
 from loguru import logger
 
+from gpu_lock import GpuLock
 from io_utils import atomic_write_json, read_json
 from ollama_client import OllamaClient, OllamaError, pick_profile, vram_used_gb
 from progress import ProgressReporter, read_progress
@@ -65,7 +66,7 @@ def cfg_hash(obj):
 
 
 class PipelineOrchestrator:
-    def __init__(self, video, workdir, cfg, language="pl", profile="auto", runners=None):
+    def __init__(self, video, workdir, cfg, language="pl", profile="auto", runners=None, gpu_lock=None):
         self.video, self.workdir, self.cfg = Path(video), Path(workdir), cfg
         self.language = language
         self.profile = pick_profile(cfg, profile)
@@ -75,6 +76,7 @@ class PipelineOrchestrator:
         self.state = read_json(self.state_path, {})
         self.has_audio = None
         self.proc = None
+        self.gpu_lock = gpu_lock or GpuLock(self.workdir.parent / ".gpu.lock")
         self.runners = runners or {
             "asr": self._run_worker, "frames": self._run_frames, "vlm": self._run_worker, "llm": self._run_worker}
 
@@ -235,6 +237,17 @@ class PipelineOrchestrator:
         rs = read_run_state(self.workdir)
         if is_live(rs) and rs.get("pid") != os.getpid():
             raise RuntimeError(f"dla tego filmu dziala juz inne uruchomienie (pid {rs.get('pid')})")
+        need_gpu = any(s in GPU_STAGES for s in stages)
+        if need_gpu and not self.gpu_lock.acquire("pipeline"):
+            h = self.gpu_lock.holder() or {}
+            raise RuntimeError(f"GPU zajete przez: {h.get('owner', '?')} (pid {h.get('pid')})")
+        try:
+            self._run_stages(stages, force)
+        finally:
+            if need_gpu:
+                self.gpu_lock.release()
+
+    def _run_stages(self, stages, force):
         self.ensure_meta()
         write_run_state(self.workdir, status="running", pid=os.getpid(), started=time.time(),
                         heartbeat=time.time(), current_stage=None, error=None, finished=None)

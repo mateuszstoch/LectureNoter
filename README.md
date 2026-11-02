@@ -52,6 +52,14 @@ Ctrl+C lub `kill <pid>` przerywa pracę bezpiecznie (model zostaje rozładowany,
 
 Brak ścieżki audio w pliku: ASR jest pomijany, a notatki powstają tylko z tablicy.
 
+## Serwer API (baza pod interfejs)
+
+```bash
+python server.py            # http://127.0.0.1:8000 (tylko lokalnie)
+```
+
+Filmy wrzucaj do katalogu `videos/` (dowiązania symboliczne działają). API: lista plików i filmów, trwała kolejka zadań (jedno naraz), regeneracja etapów, anulowanie, strumień stanu (`/api/stream`) i logów. Interfejs graficzny (PWA) jest w przygotowaniu, patrz `PLAN_UI.md`.
+
 ## Windows 11 (WSL2)
 
 Działa przez WSL2 z GPU (niesprawdzone przez autora, testowane tylko na macOS):

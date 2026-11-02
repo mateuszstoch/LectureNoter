@@ -8,3 +8,6 @@ faster-whisper
 nvidia-ml-py
 nvidia-cublas-cu12; sys_platform == 'linux'
 nvidia-cudnn-cu12==9.*; sys_platform == 'linux'
+fastapi
+uvicorn
+httpx
