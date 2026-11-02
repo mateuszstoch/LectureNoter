@@ -5,6 +5,7 @@ import faulthandler
 import json
 import logging
 import os
+import re
 import signal
 from pathlib import Path
 
@@ -14,6 +15,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import uuid
 
 import uvicorn
 import yaml
@@ -32,11 +34,15 @@ from main import STAGES
 from ollama_client import OllamaClient, pick_profile, total_vram_gb, vram_used_gb
 from ui import materials, notes as notes_mod
 from ui.chat import ChatError, ChatService, ChatStore, export_markdown
+from starlette.background import BackgroundTask
+
+from ui import archive as archive_mod
 from ui.folders import FolderError, FolderStore
 from ui.jobs import JobError, JobManager
 from ui.library import Library, LibraryError
 from ui.lifecycle import AutoExit, ClientTracker, KeepAwake, Liveness, read_mem
 from ui.search import SearchIndex
+from ui.transfer import ConflictError, ExportManager, TransferError, free_bytes, import_lecture, staging_dir, summarize
 from run_state import is_live, read_run_state
 
 ROOT = Path(__file__).resolve().parent
@@ -79,6 +85,22 @@ class FolderPatch(BaseModel):
     parent: str | None = None
 
 
+class ExportRequest(BaseModel):
+    include_video: bool = False
+
+
+class ImportCommit(BaseModel):
+    token: str
+    folder: str | None = None
+    folder_mode: str = "current"          # current | recreate
+    on_conflict: str | None = None         # copy | replace | skip
+    include_video: bool = True
+
+
+class RelinkRequest(BaseModel):
+    file: str
+
+
 class NotesBody(BaseModel):
     md: str
 
@@ -119,6 +141,7 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
     gpu = GpuLock(work_dir / ".gpu.lock")
     jm = jobs or JobManager(lib, gpu)
     folders = FolderStore(work_dir)
+    exports = ExportManager(work_dir)
     search_index = SearchIndex(lib, folders)
     tracker = ClientTracker()
 
@@ -162,7 +185,7 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
     def guard(fn):
         try:
             return fn()
-        except (LibraryError, JobError, FolderError) as e:
+        except (LibraryError, JobError, FolderError, TransferError, archive_mod.ArchiveError) as e:
             raise HTTPException(400, str(e))
 
     @app.get("/api/health")
@@ -270,6 +293,123 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
     def move(job_id: str, req: MoveRequest):
         guard(lambda: jm.move(job_id, req.position))
         return jm.snapshot()
+
+    # --- eksport i import wykladow (.lec) ---
+    def require_header(request):
+        if request.headers.get("x-lecturenoter") != "1":
+            raise HTTPException(403, "brak wymaganego naglowka")
+
+    def max_import_bytes():
+        return int(float(C().get("import", {}).get("max_gb", 50)) * 1e9)
+
+    def token_path(token):
+        if not re.fullmatch(r"[0-9a-f]{32}", token or ""):
+            raise HTTPException(400, "niepoprawny token")
+        return staging_dir(work_dir) / f"{token}.lec"
+
+    @app.get("/api/videos/{vid}/export-info")
+    def export_info(vid: str):
+        guard(lambda: lib.workdir(vid))
+        return exports.info(lib, vid)
+
+    @app.post("/api/videos/{vid}/export")
+    def export_start(vid: str, req: ExportRequest, request: Request):
+        require_header(request)
+        wd = guard(lambda: lib.workdir(vid))
+        if jm.has_active(vid) or is_live(read_run_state(wd)):
+            raise HTTPException(409, "Wykład jest w kolejce lub trwa jego przetwarzanie. Poczekaj na koniec, żeby archiwum było spójne.")
+        return {"token": guard(lambda: exports.start(lib, folders, vid, req.include_video))}
+
+    @app.get("/api/exports/{token}")
+    def export_status(token: str):
+        return guard(lambda: exports.status(token))
+
+    @app.get("/api/exports/{token}/download")
+    def export_download(token: str):
+        path, filename = guard(lambda: exports.file(token))
+        return FileResponse(path, media_type="application/octet-stream", filename=filename,
+                            background=BackgroundTask(exports.discard, token))
+
+    @app.delete("/api/exports/{token}")
+    def export_discard(token: str, request: Request):
+        require_header(request)
+        exports.discard(token)
+        return {"ok": True}
+
+    @app.put("/api/import/upload")
+    async def import_upload(request: Request, filename: str = "wyklad.lec"):
+        require_header(request)
+        limit = max_import_bytes()
+        clen = request.headers.get("content-length")
+        if clen and int(clen) > limit:
+            raise HTTPException(413, f"Plik jest za duży (limit {limit / 1e9:.0f} GB, ustawienie import.max_gb w config.yaml).")
+        token = uuid.uuid4().hex
+        path = token_path(token)
+        if clen and int(clen) * 1.05 + 100 * 1024 * 1024 > free_bytes(path.parent):
+            raise HTTPException(507, "Za mało miejsca na dysku na przesłane archiwum.")
+        written = 0
+        try:
+            with open(path, "wb") as f:
+                buf = bytearray()
+                async for chunk in request.stream():
+                    written += len(chunk)
+                    if written > limit:
+                        raise HTTPException(413, f"Plik jest za duży (limit {limit / 1e9:.0f} GB).")
+                    buf += chunk
+                    if len(buf) >= 4 * 1024 * 1024:  # zapis w watku, zeby nie blokowac petli zdarzen (SSE, API) przy gigabajtach
+                        await asyncio.to_thread(f.write, bytes(buf))
+                        buf.clear()
+                if buf:
+                    await asyncio.to_thread(f.write, bytes(buf))
+            info = await asyncio.to_thread(archive_mod.inspect_archive, path, limit)
+        except archive_mod.ArchiveError as e:
+            path.unlink(missing_ok=True)
+            raise HTTPException(400, str(e))
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
+        summary = summarize(info, lib.find_by_uid(info["manifest"].get("uid")))
+        summary.update(token=token, size=written, filename=filename)
+        return summary
+
+    @app.post("/api/import/commit")
+    async def import_commit(req: ImportCommit, request: Request):
+        require_header(request)
+        path = token_path(req.token)
+        if not path.exists():
+            raise HTTPException(404, "Przesłane archiwum wygasło. Wybierz plik ponownie.")
+        if req.folder_mode not in ("current", "recreate") or req.on_conflict not in (None, "copy", "replace", "skip"):
+            raise HTTPException(400, "niepoprawne opcje importu")
+        existing = None
+        try:
+            existing = lib.find_by_uid(archive_mod.inspect_archive(path, max_import_bytes())["manifest"].get("uid"))
+        except archive_mod.ArchiveError as e:
+            raise HTTPException(400, str(e))
+        if existing and req.on_conflict == "replace":
+            if jm.has_active(existing[0]) or is_live(read_run_state(lib.workdir(existing[0]))):
+                raise HTTPException(409, "Zastępowany wykład jest w kolejce lub trwa jego przetwarzanie.")
+        try:
+            res = await asyncio.to_thread(import_lecture, lib, folders, path, work_dir=work_dir, cfg=cfg, folder=req.folder,
+                                          folder_mode=req.folder_mode, on_conflict=req.on_conflict, include_video=req.include_video,
+                                          max_bytes=max_import_bytes())
+        except ConflictError as e:
+            raise HTTPException(409, str(e))
+        except (TransferError, archive_mod.ArchiveError) as e:
+            raise HTTPException(400, str(e))
+        path.unlink(missing_ok=True)
+        logger.info(f"zaimportowano wyklad {res['id']} ({res['title']})" + (" [zastapiony]" if res.get("replaced") else ""))
+        return res
+
+    @app.delete("/api/import/{token}")
+    def import_discard(token: str, request: Request):
+        require_header(request)
+        token_path(token).unlink(missing_ok=True)
+        return {"ok": True}
+
+    @app.post("/api/videos/{vid}/relink")
+    def relink(vid: str, req: RelinkRequest, request: Request):
+        require_header(request)
+        return guard(lambda: lib.relink(vid, req.file))
 
     # --- nazwy, foldery, wyszukiwanie ---
     def folders_with_counts():

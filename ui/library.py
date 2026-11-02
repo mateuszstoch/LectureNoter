@@ -13,8 +13,11 @@ VIDEO_EXT = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v"}
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,80}$")
 
 
+_PL = str.maketrans({"ł": "l", "Ł": "L", "ø": "o", "Ø": "O", "đ": "d", "Đ": "D", "ß": "ss"})  # litery bez rozkladu w Unicode
+
+
 def slugify(name):
-    s = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()
+    s = unicodedata.normalize("NFKD", name.translate(_PL)).encode("ascii", "ignore").decode().lower()
     s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
     return s[:60] or "film"
 
@@ -47,7 +50,7 @@ class Library:
         idx = {}
         for d in self.work_dir.iterdir():
             meta = read_json(d / "meta.json") if d.is_dir() else None
-            if meta and ID_RE.match(d.name):
+            if meta and ID_RE.match(d.name) and meta.get("video_path"):
                 idx[meta["video_path"]] = d.name
         return idx
 
@@ -104,6 +107,52 @@ class Library:
     # --- stan ---
     def orchestrator(self, video_id):
         return PipelineOrchestrator.from_workdir(self.workdir(video_id), self.cfg)
+
+    # --- uid, wskazanie pliku wideo ---
+    def ensure_uid(self, video_id):
+        """Staly identyfikator wykladu (przy imporcie pozwala wykryc ten sam wyklad); nadawany leniwie starym wykladom."""
+        import uuid
+        wd = self.workdir(video_id)
+        meta = read_json(wd / "meta.json", {})
+        if not meta.get("uid"):
+            meta["uid"] = uuid.uuid4().hex
+            atomic_write_json(str(wd / "meta.json"), meta)
+        return meta["uid"]
+
+    def find_by_uid(self, uid):
+        for vid, meta in self.iter_meta():
+            if uid and meta.get("uid") == uid:
+                return vid, meta.get("title") or vid
+        return None
+
+    def unique_video_path(self, name):
+        """Sciezka w videos/ bez nadpisywania istniejacego pliku."""
+        base = self.videos_dir.resolve()
+        stem, suf = Path(name).stem, Path(name).suffix
+        p, n = base / name, 2
+        while p.exists() or p.is_symlink():
+            p, n = base / f"{stem} ({n}){suf}", n + 1
+        return p
+
+    def relink(self, video_id, rel):
+        """Wskazuje plik wideo z katalogu videos/ dla wykladu (np. zaimportowanego bez filmu albo przeniesionego)."""
+        from main import video_sig
+        p = self._resolve_file(rel)
+        other = self._index().get(str(p))
+        if other and other != video_id:
+            raise LibraryError(f"Ten plik jest już przypisany do innego wykładu ({other}).")
+        try:
+            import frames_module
+            probe = frames_module.probe(p)
+        except Exception as e:
+            raise LibraryError(f"ffprobe nie rozpoznał pliku jako wideo: {e}")
+        wd = self.workdir(video_id)
+        meta = read_json(wd / "meta.json", {})
+        meta.update(video_path=str(p), video_sig=video_sig(p), duration=probe["duration"], has_audio=probe["has_audio"],
+                    width=probe["width"], height=probe["height"])
+        atomic_write_json(str(wd / "meta.json"), meta)
+        self.orchestrator(video_id).rebase_state(stages=("asr", "frames"))  # przyjmij wyniki jako dotyczace tego filmu
+        return self.summary(video_id)
 
     # --- nazwa i folder ---
     def iter_meta(self):

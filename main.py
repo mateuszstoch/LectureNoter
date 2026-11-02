@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import yaml
@@ -29,6 +30,8 @@ OUTPUTS = {"asr": ["transcript.json"], "frames": ["frames_metadata.json"],
 # artefakty posrednie do usuniecia, gdy etap jest nieaktualny
 LEFTOVERS = {"asr": ["audio.wav"], "frames": ["frames"], "vlm": ["vision_context.jsonl"], "llm": ["chunks"]}
 GPU_STAGES = {"asr", "vlm", "llm"}
+VIDEO_STAGES = {"asr", "frames"}  # tylko te etapy czytaja plik wideo; vlm i llm dzialaja na wynikach
+NO_VIDEO = "__brak_wideo__"      # nazwa zastepcza sciezki dla wykladu bez pliku wideo (np. zaimportowanego bez filmu)
 RESUMABLE = {"vlm", "llm"}  # etapy z checkpointami (vision_context.jsonl, chunks/) wznawianymi po awarii
 
 
@@ -72,6 +75,7 @@ def cfg_hash(obj):
 class PipelineOrchestrator:
     def __init__(self, video, workdir, cfg, language="pl", profile="auto", runners=None, gpu_lock=None):
         self.video, self.workdir, self.cfg = Path(video), Path(workdir), cfg
+        self.video_known = self.video.name != NO_VIDEO
         self.language = language
         self.profile = pick_profile(cfg, profile)
         self.prof = cfg["profiles"][self.profile]
@@ -90,7 +94,7 @@ class PipelineOrchestrator:
         meta = read_json(Path(workdir) / "meta.json")
         if not meta:
             raise FileNotFoundError(f"brak meta.json w {workdir}")
-        return cls(meta["video_path"], workdir, cfg, meta.get("language", cfg["language"]),
+        return cls(meta.get("video_path") or str(Path(workdir) / NO_VIDEO), workdir, cfg, meta.get("language", cfg["language"]),
                    meta.get("profile", profile) if profile == "auto" else profile)
 
     # --- meta.json ---
@@ -98,9 +102,16 @@ class PipelineOrchestrator:
         path = self.workdir / "meta.json"
         meta = read_json(path, {}) or {}
         new = dict(meta)
-        new.update(video_path=str(self.video.resolve()), title=meta.get("title") or self.video.stem,
-                   language=self.language, profile=self.profile)
+        new.setdefault("uid", uuid.uuid4().hex)  # staly identyfikator wykladu (wykrywanie duplikatow przy imporcie)
         new.setdefault("created", time.time())
+        new.update(language=self.language, profile=self.profile)
+        if not self.video_known:  # wyklad bez pliku wideo: nie ruszamy pol dotyczacych filmu
+            if new != meta:
+                atomic_write_json(str(path), new)
+            if self.has_audio is None:
+                self.has_audio = new.get("has_audio")
+            return new
+        new.update(video_path=str(self.video.resolve()), title=meta.get("title") or self.video.stem)
         sig = video_sig(self.video) if self.video.exists() else None
         changed = meta.get("video_sig") != sig or meta.get("video_path") != new["video_path"]
         new["video_sig"] = sig
@@ -129,8 +140,8 @@ class PipelineOrchestrator:
 
     def input_sig(self, stage):
         w = self.workdir
-        return {"asr": lambda: video_sig(self.video),
-                "frames": lambda: video_sig(self.video),
+        return {"asr": lambda: video_sig(self.video) if self.video.exists() else "",
+                "frames": lambda: video_sig(self.video) if self.video.exists() else "",
                 "vlm": lambda: file_hash(w / "frames_metadata.json"),
                 "llm": lambda: file_hash(w / "transcript.json") + file_hash(w / "vision_context.json")}[stage]()
 
@@ -138,7 +149,10 @@ class PipelineOrchestrator:
         s = self.state.get(stage)
         if not s or s.get("status") not in ("done", "skipped"):
             return False
-        if s["config"] != self.config_sig(stage) or s["input"] != self.input_sig(stage):
+        if s["config"] != self.config_sig(stage):
+            return False
+        # bez pliku wideo nie da sie sprawdzic wejscia etapow asr/frames: wynik uznajemy za aktualny
+        if not (stage in VIDEO_STAGES and not self.video.exists()) and s["input"] != self.input_sig(stage):
             return False
         if s["status"] == "done" and not all((self.workdir / o).exists() for o in OUTPUTS[stage]):
             return False
@@ -190,7 +204,7 @@ class PipelineOrchestrator:
                 status = "interrupted"
             elif rs.get("status") in ("error", "cancelled") and rs.get("current_stage") == st:
                 status = rs["status"]
-            elif video_ok and self.is_done(st):
+            elif self.is_done(st):
                 status = saved["status"]
             elif saved.get("status") in ("done", "skipped"):
                 status = "stale"
@@ -275,10 +289,28 @@ class PipelineOrchestrator:
             self.has_audio = frames_module.probe(self.video)["has_audio"]
         return self.has_audio
 
-    def run(self, from_stage=None, only_stage=None, force=False):
-        stages = [only_stage] if only_stage else STAGES
+    @staticmethod
+    def stages_for(from_stage=None, only_stage=None):
+        if only_stage:
+            return [only_stage]
         if from_stage:
-            stages = [s for s in STAGES if STAGES.index(s) >= STAGES.index(from_stage)]
+            return [s for s in STAGES if STAGES.index(s) >= STAGES.index(from_stage)]
+        return list(STAGES)
+
+    def needs_video(self, stages, force=False):
+        """Czy uruchomienie tych etapow odczyta plik wideo (etapy asr/frames, ktore nie sa jeszcze gotowe)."""
+        return any(s in VIDEO_STAGES and (force or not self.is_done(s)) for s in stages)
+
+    def rebase_state(self, stages=None):
+        """Uznaje zapisane wyniki za aktualne wzgledem biezacej konfiguracji i wejsc (po imporcie wykladu: wyniki sa
+        przenoszone w stanie, w jakim sa, a podpisy z innego komputera nie pasuja do tego). `stages`: tylko te etapy."""
+        for stage, s in list(self.state.items()):
+            if stage in (stages or STAGES) and s.get("status") in ("done", "skipped"):
+                s["config"], s["input"] = self.config_sig(stage), self.input_sig(stage)
+        atomic_write_json(str(self.state_path), self.state)
+
+    def run(self, from_stage=None, only_stage=None, force=False):
+        stages = self.stages_for(from_stage, only_stage)
         rs = read_run_state(self.workdir)
         if is_live(rs) and rs.get("pid") != os.getpid():
             raise RuntimeError(f"dla tego filmu dziala juz inne uruchomienie (pid {rs.get('pid')})")
@@ -390,17 +422,19 @@ def main():
     if args.worker:
         worker(args.worker, args, cfg)
         return
-    if not Path(args.video).exists():
-        sys.exit(f"brak pliku wideo: {args.video} (katalog biezacy: {os.getcwd()}). Sprawdz, czy plik istnieje i jest "
-                 "dostepny z WSL/Linuksa; film dodaj ponownie z katalogu videos/ projektu.")
-    for tool in ("ffmpeg", "ffprobe"):
-        if not shutil.which(tool):
-            sys.exit(f"brak {tool} w PATH")
+    orch = PipelineOrchestrator(args.video, args.workdir, cfg, args.language, args.profile)
+    stages = orch.stages_for(args.from_stage, args.only_stage)
+    if orch.needs_video(stages, args.force):
+        if not Path(args.video).exists():
+            sys.exit(f"brak pliku wideo: {args.video} (katalog biezacy: {os.getcwd()}). Sprawdz, czy plik istnieje i jest "
+                     "dostepny z WSL/Linuksa; film dodaj ponownie z katalogu videos/ projektu.")
+        for tool in ("ffmpeg", "ffprobe"):
+            if not shutil.which(tool):
+                sys.exit(f"brak {tool} w PATH")
     signal.signal(signal.SIGTERM, _raise_cancelled)
     signal.signal(signal.SIGINT, _raise_cancelled)
     try:
-        PipelineOrchestrator(args.video, args.workdir, cfg, args.language, args.profile).run(
-            args.from_stage, args.only_stage, args.force)
+        orch.run(args.from_stage, args.only_stage, args.force)
     except Cancelled:
         sys.exit(130)
     except (OllamaError, RuntimeError) as e:

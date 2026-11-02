@@ -1154,3 +1154,270 @@ def test_bye_endpoint_and_system_exposes_previous_exit(client):
     c.app.state.previous_exit = {"kind": "unexpected", "started": 1.0, "last_seen": 2.0, "mem_available_mb": 300}
     d = c.get("/api/system").json()
     assert d["previous_exit"]["kind"] == "unexpected" and d["uptime_s"] >= 0 and "auto_exit" in d
+
+
+# ---------- eksport i import wykladow (.lec) ----------
+import io  # noqa: E402
+import zipfile  # noqa: E402
+
+HDR = {"x-lecturenoter": "1"}
+
+
+def seed_full(lib, name="ok.mp4", title="Wykład o maszynach Turinga"):
+    """Kompletny wyklad: wyniki wszystkich etapow, notatki (generowane i edytowane), historia, klatka, rozmowa."""
+    vid = lib.add_video(name)
+    lib.rename(vid, title)
+    wd = lib.workdir(vid)
+    (wd / "transcript.json").write_text(json.dumps([{"start": 1, "end": 2, "text": "Dzień dobry"}]), encoding="utf-8")
+    (wd / "frames").mkdir(exist_ok=True)
+    (wd / "frames" / "frame_000001_t00001.jpg").write_bytes(b"\xff\xd8jpgdane")
+    (wd / "frames_metadata.json").write_text(json.dumps([{"file": "frame_000001_t00001.jpg", "timestamp": 1.0}]), encoding="utf-8")
+    (wd / "vision_context.json").write_text(json.dumps([{"file": "frame_000001_t00001.jpg", "timestamp": 1.0, "text": "M = (Σ, Γ)"}]), encoding="utf-8")
+    (wd / "lecture_notes.md").write_text("# Notatki\n## Maszyna\n$x^2$ ąęłóż", encoding="utf-8")
+    (wd / "lecture_notes.edited.md").write_text("# Moje notatki\nedytowane", encoding="utf-8")
+    (wd / "notes_history").mkdir(exist_ok=True)
+    (wd / "notes_history" / "20260101-120000.md").write_text("poprzednia wersja", encoding="utf-8")
+    (wd / "chat.json").write_text(json.dumps({"chats": [{"id": "c1", "title": "Pytanie", "created": 1.0, "updated": 2.0, "summary": "", "summarized_upto": 0,
+                                                         "messages": [{"role": "user", "content": "Cześć"}]}]}), encoding="utf-8")
+    (wd / "pipeline.log").write_text("log do pominiecia")
+    o = lib.orchestrator(vid)
+    for s in m.STAGES:
+        o.save_state(s, "done", 1.0)
+    return vid, wd
+
+
+def do_export(c, vid, include_video=False, timeout=15):
+    r = c.post(f"/api/videos/{vid}/export", json={"include_video": include_video}, headers=HDR)
+    assert r.status_code == 200, r.text
+    token = r.json()["token"]
+    end = time.time() + timeout
+    while time.time() < end:
+        st = c.get(f"/api/exports/{token}").json()
+        if st["state"] != "building":
+            break
+        time.sleep(0.05)
+    assert st["state"] == "ready", st
+    assert st["done"] == st["total"]
+    d = c.get(f"/api/exports/{token}/download")
+    assert d.status_code == 200
+    return d.content, token, st
+
+
+def do_upload(c, data, filename="wyklad.lec", headers=HDR):
+    return c.put("/api/import/upload", params={"filename": filename}, content=data, headers=headers)
+
+
+def test_export_produces_lec_archive_and_cleans_up(client, env):
+    c, jm = client
+    lib = env[0]
+    vid, wd = seed_full(lib)
+    info = c.get(f"/api/videos/{vid}/export-info").json()
+    assert info["has_video"] is True and info["video_bytes"] > 0 and info["files"] >= 9
+    data, token, st = do_export(c, vid)
+    assert st["filename"] == "wyklad-o-maszynach-turinga.lec"
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    names = zf.namelist()
+    assert names[0] == "manifest.json" and "data/chat.json" in names and "data/lecture_notes.edited.md" in names
+    assert not any("pipeline.log" in n or n.startswith("video/") for n in names)
+    man = json.loads(zf.read("manifest.json"))
+    assert man["title"] == "Wykład o maszynach Turinga" and man["has_video"] is False and man["uid"]
+    assert c.get(f"/api/exports/{token}/download").status_code == 400       # plik jest usuwany po pobraniu
+    assert list((wd.parent / ".exports").glob("*.lec*")) == []
+    # z filmem
+    data2, _, _ = do_export(c, vid, include_video=True)
+    z2 = zipfile.ZipFile(io.BytesIO(data2))
+    assert any(n.startswith("video/") for n in z2.namelist()) and json.loads(z2.read("manifest.json"))["has_video"] is True
+
+
+def test_export_guards(client, env):
+    c, jm = client
+    lib = env[0]
+    vid, wd = seed_full(lib)
+    assert c.post(f"/api/videos/{vid}/export", json={}).status_code == 403            # brak naglowka ochronnego
+    jm.enqueue(vid)
+    assert c.post(f"/api/videos/{vid}/export", json={}, headers=HDR).status_code == 409  # trwa przetwarzanie
+    jm.set_paused(True)
+    jm.cancel(jm.snapshot()["jobs"][-1]["id"])
+    (env[3] / "ok.mp4").unlink()                                                      # film zniknal: nie da sie go dolaczyc
+    r = c.post(f"/api/videos/{vid}/export", json={"include_video": True}, headers=HDR)
+    assert r.status_code == 400 and "wideo" in r.json()["detail"]
+    assert c.post(f"/api/videos/{vid}/export", json={"include_video": False}, headers=HDR).status_code == 200
+    assert c.get("/api/exports/nie-ma").status_code == 400
+    assert c.post("/api/videos/nie-ma/export", json={}, headers=HDR).status_code == 400
+
+
+def test_import_round_trip_into_clean_library_keeps_everything(client, env):
+    c, jm = client
+    lib, gpu, _, videos, work = env
+    vid, wd = seed_full(lib)
+    orig_uid = lib.ensure_uid(vid)
+    data, _, _ = do_export(c, vid)
+    assert c.delete(f"/api/videos/{vid}").status_code == 200                     # "inny komputer": pusta biblioteka
+    up = do_upload(c, data)
+    assert up.status_code == 200, up.text
+    s = up.json()
+    assert s["title"] == "Wykład o maszynach Turinga" and s["conflict"] is None and s["has_video"] is False and s["token"]
+    res = c.post("/api/import/commit", json={"token": s["token"]}, headers=HDR).json()
+    new = res["id"]
+    assert res["title"] == "Wykład o maszynach Turinga" and res["has_video"] is False and res["replaced"] is False
+    nwd = lib.workdir(new)
+    assert (nwd / "lecture_notes.md").read_text(encoding="utf-8") == "# Notatki\n## Maszyna\n$x^2$ ąęłóż"
+    assert (nwd / "lecture_notes.edited.md").read_text(encoding="utf-8") == "# Moje notatki\nedytowane"
+    assert (nwd / "notes_history" / "20260101-120000.md").read_text(encoding="utf-8") == "poprzednia wersja"
+    assert (nwd / "frames" / "frame_000001_t00001.jpg").read_bytes() == b"\xff\xd8jpgdane"
+    assert c.get(f"/api/videos/{new}/chats").json()[0]["title"] == "Pytanie"
+    assert not (nwd / "pipeline.log").exists() and lib.ensure_uid(new) == orig_uid
+    # wyniki przeniesione w stanie 'gotowe' mimo braku filmu i innej konfiguracji
+    sm = c.get(f"/api/videos/{new}").json()
+    assert sm["video_exists"] is False and all(sm["stages"][s]["status"] == "done" for s in ("asr", "frames", "vlm", "llm"))
+    assert c.get(f"/api/videos/{new}/notes").json()["source"] == "edited"
+    assert c.get("/api/search", params={"q": "maszynie"}).json()["total_hits"] >= 0
+    # staging posprzatany
+    assert list((work / ".imports").glob("*")) == []
+    # bez filmu mozna regenerowac notatki, ale nie etapy czytajace wideo
+    jm_job = {"video_id": new, "only_stage": "llm", "force": True}
+    meta = json.loads((nwd / "meta.json").read_text())
+    assert jm.preflight(jm_job, meta) is None
+    assert "Plik wideo nie istnieje" in jm.preflight({"video_id": new, "only_stage": "frames", "force": True}, meta)
+    assert "Wskaz plik wideo" in jm.preflight({"video_id": new, "force": True}, meta)
+
+
+def test_import_conflict_options(client, env):
+    c, jm = client
+    lib = env[0]
+    vid, wd = seed_full(lib)
+    data, _, _ = do_export(c, vid)
+    s = do_upload(c, data).json()
+    assert s["conflict"] == {"id": vid, "title": "Wykład o maszynach Turinga"}      # ten sam wyklad juz istnieje
+    r = c.post("/api/import/commit", json={"token": s["token"]}, headers=HDR)
+    assert r.status_code == 409 and "już istnieje" in r.json()["detail"]
+    # kopia: nowy wyklad z nowym uid
+    copy = c.post("/api/import/commit", json={"token": s["token"], "on_conflict": "copy"}, headers=HDR).json()
+    assert copy["id"] != vid and copy["title"].endswith("(kopia)") and lib.ensure_uid(copy["id"]) != lib.ensure_uid(vid)
+    # zastapienie: te same id, dane z archiwum (zmieniamy oryginal, zeby to udowodnic), folder zachowany
+    s2 = do_upload(c, data).json()
+    (wd / "lecture_notes.edited.md").write_text("ZMIENIONE PO EKSPORCIE", encoding="utf-8")
+    fid = c.post("/api/folders", json={"name": "Egzaminy"}).json()["id"]
+    c.patch(f"/api/videos/{vid}", json={"folder": fid})
+    rep = c.post("/api/import/commit", json={"token": s2["token"], "on_conflict": "replace"}, headers=HDR).json()
+    assert rep["id"] == vid and rep["replaced"] is True
+    assert (wd / "lecture_notes.edited.md").read_text(encoding="utf-8") == "# Moje notatki\nedytowane"
+    assert c.get(f"/api/videos/{vid}").json()["folder"] == fid and (wd.parent / vid).exists()
+    # pominiecie
+    s3 = do_upload(c, data).json()
+    assert c.post("/api/import/commit", json={"token": s3["token"], "on_conflict": "skip"}, headers=HDR).json()["skipped"] is True
+    # zastapienie zablokowane przy trwajacym przetwarzaniu
+    s4 = do_upload(c, data).json()
+    jm.enqueue(vid)
+    assert c.post("/api/import/commit", json={"token": s4["token"], "on_conflict": "replace"}, headers=HDR).status_code == 409
+
+
+def test_import_folder_modes(client, env):
+    c, jm = client
+    lib = env[0]
+    vid, wd = seed_full(lib)
+    top = c.post("/api/folders", json={"name": "Semestr 3"}).json()["id"]
+    sub = c.post("/api/folders", json={"name": "Matematyka", "parent": top}).json()["id"]
+    c.patch(f"/api/videos/{vid}", json={"folder": sub})
+    data, _, _ = do_export(c, vid)
+    assert json.loads(zipfile.ZipFile(io.BytesIO(data)).read("manifest.json"))["folder_path"] == ["Semestr 3", "Matematyka"]
+    c.delete(f"/api/videos/{vid}")
+    # 'current': do wskazanego folderu
+    s = do_upload(c, data).json()
+    cur = c.post("/api/import/commit", json={"token": s["token"], "folder": top, "folder_mode": "current"}, headers=HDR).json()
+    assert cur["folder"] == top
+    c.delete(f"/api/videos/{cur['id']}")
+    # 'recreate': istniejace foldery sa uzywane, brakujace tworzone
+    c.delete(f"/api/folders/{sub}")
+    s = do_upload(c, data).json()
+    rec = c.post("/api/import/commit", json={"token": s["token"], "folder_mode": "recreate"}, headers=HDR).json()
+    chain = {f["id"]: f["path"] for f in c.get("/api/folders").json()}
+    assert chain[rec["folder"]] == ["Semestr 3", "Matematyka"]
+    assert len([f for f in chain.values() if f == ["Semestr 3"]]) == 1          # nie dubluje istniejacego folderu
+
+
+def test_import_with_video_unique_name_and_without(client, env):
+    c, jm = client
+    lib, gpu, _, videos, work = env
+    vid, wd = seed_full(lib)
+    data, _, _ = do_export(c, vid, include_video=True)
+    c.delete(f"/api/videos/{vid}")
+    s = do_upload(c, data).json()
+    assert s["has_video"] is True and s["video_name"] == "ok.mp4" and s["video_bytes"] > 0
+    r = c.post("/api/import/commit", json={"token": s["token"], "include_video": True}, headers=HDR).json()
+    assert r["has_video"] is True
+    meta = json.loads((lib.workdir(r["id"]) / "meta.json").read_text())
+    assert Path(meta["video_path"]).name == "ok (2).mp4" and Path(meta["video_path"]).exists()   # 'ok.mp4' juz istnial: bez nadpisania
+    assert (videos / "ok.mp4").exists()
+    assert c.get(f"/api/videos/{r['id']}").json()["video_exists"] is True
+    # ten sam archiwum, ale 'bez wideo'
+    s2 = do_upload(c, data).json()
+    r2 = c.post("/api/import/commit", json={"token": s2["token"], "include_video": False, "on_conflict": "copy"}, headers=HDR).json()
+    assert r2["has_video"] is False and not (videos / "ok (3).mp4").exists()
+
+
+def test_import_rejects_bad_input_via_api(client, env, tmp_path):
+    c, jm = client
+    lib, gpu, _, videos, work = env
+    assert do_upload(c, b"to nie jest zip").status_code == 400
+    assert "nie jest poprawne archiwum" in do_upload(c, b"to nie jest zip").json()["detail"]
+    assert do_upload(c, b"x", headers={}).status_code == 403
+    evil = io.BytesIO()
+    with zipfile.ZipFile(evil, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({"format": "lecturenoter-lecture", "version": 1}))
+        zf.writestr("data/meta.json", json.dumps({"title": "x"}))
+        zf.writestr("data/../../poza.txt", "zlosliwe")
+    r = do_upload(c, evil.getvalue())
+    assert r.status_code == 400 and "Niebezpieczna sciezka" in r.json()["detail"]
+    assert list((work / ".imports").glob("*")) == [] and not (work.parent / "poza.txt").exists()      # nic nie zostalo na dysku
+    assert c.post("/api/import/commit", json={"token": "0" * 32}, headers=HDR).status_code == 404
+    assert c.post("/api/import/commit", json={"token": "../../etc"}, headers=HDR).status_code == 400
+    assert c.post("/api/import/commit", json={"token": "0" * 32}).status_code == 403
+    # podwojne zatwierdzenie: plik jest zuzyty
+    vid, _ = seed_full(lib)
+    data, _, _ = do_export(c, vid)
+    s = do_upload(c, data).json()
+    assert c.post("/api/import/commit", json={"token": s["token"], "on_conflict": "copy"}, headers=HDR).status_code == 200
+    assert c.post("/api/import/commit", json={"token": s["token"], "on_conflict": "copy"}, headers=HDR).status_code == 404
+    # anulowanie importu usuwa przeslany plik
+    s2 = do_upload(c, data).json()
+    assert c.delete(f"/api/import/{s2['token']}", headers=HDR).status_code == 200
+    assert list((work / ".imports").glob("*")) == []
+
+
+def test_import_size_limit(env):
+    lib, gpu, jm, videos, work = env
+    cfg = copy.deepcopy(CFG)
+    cfg["import"] = {"max_gb": 0.00001}                 # ~10 kB
+    c = TestClient(create_app(cfg, videos, work, jobs=jm, start_jobs=False, extra_hosts=("testserver",)))
+    r = do_upload(c, b"x" * 50_000)
+    assert r.status_code == 413 and "za duży" in r.json()["detail"]
+    assert list((work / ".imports").glob("*")) == []
+
+
+def test_relink_video_and_imported_without_video(client, env):
+    c, jm = client
+    lib, gpu, _, videos, work = env
+    vid, wd = seed_full(lib)
+    data, _, _ = do_export(c, vid)                       # bez filmu
+    c.delete(f"/api/videos/{vid}")
+    new = c.post("/api/import/commit", json={"token": do_upload(c, data).json()["token"]}, headers=HDR).json()["id"]
+    assert c.get(f"/api/videos/{new}").json()["video_exists"] is False
+    r = c.post(f"/api/videos/{new}/relink", json={"file": "ok.mp4"}, headers=HDR)
+    assert r.status_code == 200 and r.json()["video_exists"] is True and r.json()["duration"] > 0
+    assert all(r.json()["stages"][s]["status"] == "done" for s in ("asr", "frames", "vlm", "llm"))   # wyniki zostaja aktualne
+    assert json.loads((lib.workdir(new) / "meta.json").read_text())["video_path"].endswith("ok.mp4")
+    # ten sam plik nie moze byc przypisany do dwoch wykladow, a nie-wideo jest odrzucane
+    other = lib.add_video("other.mp4")
+    assert c.post(f"/api/videos/{other}/relink", json={"file": "ok.mp4"}, headers=HDR).status_code == 400
+    assert c.post(f"/api/videos/{new}/relink", json={"file": "notatki.txt"}, headers=HDR).status_code == 400
+    assert c.post(f"/api/videos/{new}/relink", json={"file": "../x.mp4"}, headers=HDR).status_code == 400
+    assert c.post(f"/api/videos/{new}/relink", json={"file": "other.mp4"}).status_code == 403
+
+
+def test_missing_video_does_not_make_video_stages_stale(env):
+    lib, gpu, jm, videos, work = env
+    vid, wd = seed_full(lib)
+    (videos / "ok.mp4").unlink()
+    st = lib.summary(vid)
+    assert st["video_exists"] is False and all(st["stages"][s]["status"] == "done" for s in ("asr", "frames", "vlm", "llm"))

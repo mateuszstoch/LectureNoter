@@ -179,6 +179,12 @@ input[type=search] { -webkit-appearance: none; appearance: none; }
 .hit-kind { display: block; font: 500 11px var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-bottom: 2px; }
 .hit-snippet { display: block; font: 15px/1.5 var(--serif); color: var(--ink-2); overflow-wrap: anywhere; }
 
+.opt { display: flex; gap: 10px; align-items: flex-start; margin: 6px 0; cursor: pointer; }
+.opt > span { flex: 1; min-width: 0; }
+.opt input { margin-top: 4px; flex: none; }
+.filedrop { outline: 2px dashed var(--accent); outline-offset: 8px; background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.linkbtn:disabled { opacity: .4; cursor: not-allowed; text-decoration: none; }
+
 /* --- kolejka --- */
 .queue { border-top: 1px solid var(--ink); padding-top: 14px; }
 .queue h2 { margin-bottom: 4px; }

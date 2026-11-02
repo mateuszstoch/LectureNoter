@@ -11,7 +11,7 @@ from pathlib import Path
 from loguru import logger
 
 from io_utils import atomic_write_json, read_json
-from main import STAGES
+from main import NO_VIDEO, STAGES
 from run_state import is_live, pid_alive, read_run_state
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -25,7 +25,7 @@ class JobError(ValueError):
 
 
 def default_cmd(job, wd, meta):
-    cmd = [sys.executable, str(ROOT / "main.py"), meta["video_path"], "--workdir", str(wd),
+    cmd = [sys.executable, str(ROOT / "main.py"), meta.get("video_path") or str(Path(wd) / NO_VIDEO), "--workdir", str(wd),
            "--profile", meta.get("profile", "auto"), "--language", meta.get("language", "pl")]
     if job.get("from_stage"):
         cmd += ["--from-stage", job["from_stage"]]
@@ -202,13 +202,19 @@ class JobManager:
             self.blocked_by = None
             self._start(nxt)
 
-    @staticmethod
-    def preflight(meta):
-        """Czytelny opis problemu, ktory uniemozliwilby start zadania (albo None)."""
+    def preflight(self, job, meta):
+        """Czytelny opis problemu, ktory uniemozliwilby start zadania (albo None). Plik wideo jest wymagany tylko wtedy,
+        gdy uruchamiane etapy go czytaja (asr/frames), wiec wyklad bez filmu moze np. regenerowac notatki."""
         video = meta.get("video_path")
-        if not video or not Path(video).exists():
-            return (f"Plik wideo nie istnieje (z perspektywy serwera): {video}. Film mogl zostac przeniesiony lub usuniety "
-                    "albo projekt dzialal wczesniej w innej lokalizacji (inna sciezka WSL). Dodaj film ponownie z katalogu videos/.")
+        try:
+            orch = self.lib.orchestrator(job["video_id"])
+            needs = orch.needs_video(orch.stages_for(job.get("from_stage"), job.get("only_stage")), job.get("force"))
+        except Exception:
+            needs = True
+        if needs and (not video or not Path(video).exists()):
+            return (f"Plik wideo nie istnieje (z perspektywy serwera): {video or '(brak)'}. Film mogl zostac przeniesiony lub usuniety, "
+                    "wyklad byl zaimportowany bez filmu albo projekt dzialal wczesniej w innej lokalizacji. "
+                    "Wskaz plik wideo w szczegolach wykladu (przycisk 'Wskaz plik wideo') lub dodaj film ponownie z katalogu videos/.")
         if not Path(sys.executable).exists():
             return (f"Interpreter Pythona serwera nie istnieje: {sys.executable}. Srodowisko venv zostalo usuniete lub "
                     "przeniesione. Uruchom serwer ponownie (scripts/start.sh albo start.bat).")
@@ -218,7 +224,7 @@ class JobManager:
         try:
             wd = self.lib.workdir(job["video_id"])
             meta = read_json(wd / "meta.json", {})
-            problem = self.preflight(meta)
+            problem = self.preflight(job, meta)
             if problem:
                 logger.error(f"zadanie {job['id']} ({job['video_id']}): {problem}")
                 job.update(status="error", finished=time.time(), error=problem)

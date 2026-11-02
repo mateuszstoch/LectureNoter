@@ -81,8 +81,9 @@ class ChatStore:
 
     def list(self):
         with self._lock:
-            return sorted(({"id": c["id"], "title": c["title"], "created": c["created"], "updated": c["updated"],
-                            "count": len(c["messages"]), "model": c.get("model")} for c in self._load()["chats"]),
+            return sorted(({"id": c.get("id"), "title": c.get("title") or "Rozmowa", "created": c.get("created", 0),
+                            "updated": c.get("updated", c.get("created", 0)), "count": len(c.get("messages", [])), "model": c.get("model")}
+                           for c in self._load()["chats"] if c.get("id")),
                           key=lambda c: c["updated"], reverse=True)
 
     def create(self, title=None):
