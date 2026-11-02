@@ -147,7 +147,12 @@ function mountNotesTab(container, videoId) {
     const toc = renderNotesInto(body, data.md, videoId);
     const tocEl = h("nav", { class: "toc", "aria-label": "Spis treści" }, h("div", { class: "label" }, "Spis treści"),
       toc.filter((t) => t.level <= 3).map((t) => h("a", { class: `toc-l${t.level}`, href: "#", onclick: (e) => { e.preventDefault(); document.getElementById(t.id).scrollIntoView({ behavior: "smooth", block: "start" }); } }, t.text)));
-    root.replaceChildren(toolbar(), h("div", { class: "notes-layout" }, tocEl, body));
+    const q = data.quality;
+    const bad = q && q.degraded_chunks && q.degraded_chunks.length;
+    const qBanner = bad ? h("div", { class: "banner warn" },
+      `W ${q.degraded_chunks.length} z ${q.chunks} fragmentów model zapętlił się i powtórzenia zostały usunięte automatycznie, ale treść tych fragmentów (nr ${q.degraded_chunks.join(", ")}) może być niepełna. `,
+      "Możesz wygenerować notatki ponownie (Przetwarzanie → Notatki (LLM) → Regeneruj).") : null;
+    root.replaceChildren(...kids(toolbar(), qBanner, h("div", { class: "notes-layout" }, tocEl, body)));
   }
 
   function doSearch(q) {

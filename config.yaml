@@ -20,5 +20,5 @@ frames:
   max_frames: 300
   jpeg_quality: 90
 vlm: { model: "qwen2.5vl:7b", num_predict: 800, keep_alive: "10m" }
-llm: { prompt_version: 2, chunk_minutes: 10, num_predict: 3000, temperature: 0.2 }
+llm: { prompt_version: 3, chunk_minutes: 10, num_predict: 3000, temperature: 0.3, repeat_penalty: 1.1, loop_retries: 2 }
 chat: { num_predict: 1200, temperature: 0.2, history_ratio: 0.25, idle_release_s: 600, timeout_s: 600 }

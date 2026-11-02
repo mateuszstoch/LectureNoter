@@ -8,6 +8,7 @@ import numpy as np
 from loguru import logger
 
 from io_utils import atomic_write_json, fmt_ts
+from textguard import collapse_loops
 
 HALLUCINATIONS = ("dziękuję za uwagę", "napisy stworzone przez", "napisy wykonane przez",
                   "dziękuję za oglądanie", "subskrybuj")
@@ -32,6 +33,20 @@ def load_wav16k(path):
     if audio.size == 0:
         raise ValueError("sciezka audio jest pusta (film bez dzwieku?)")
     return audio
+
+
+def drop_repeated_segments(segments, max_run=2):
+    """Whisper na ciszy lub szumie potrafi powtarzac ten sam segment dziesiatki razy: zostawiamy najwyzej max_run
+    kolejnych identycznych segmentow i czyscimy petle slow wewnatrz segmentu."""
+    out, run, prev = [], 0, None
+    for s in segments:
+        s = dict(s, text=collapse_loops(s["text"]).strip())
+        key = " ".join(s["text"].lower().split())
+        run = run + 1 if key == prev else 1
+        prev = key
+        if s["text"] and run <= max_run:
+            out.append(s)
+    return out
 
 
 def is_hallucination(text):
@@ -68,6 +83,10 @@ def run_asr(video, workdir, cfg, language="pl", progress=None):
     finally:
         del model
         gc.collect()
+    n_raw = len(out)
+    out = drop_repeated_segments(out)
+    if len(out) < n_raw:
+        logger.warning(f"ASR: usunieto {n_raw - len(out)} powtorzonych segmentow (zapetlenie modelu)")
     logger.info(f"ASR: gotowe, {len(out)} segmentow")
     atomic_write_json(str(workdir / "transcript.json"), out)
     wav.unlink(missing_ok=True)

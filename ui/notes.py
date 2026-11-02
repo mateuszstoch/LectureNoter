@@ -4,6 +4,8 @@ import shutil
 import time
 from pathlib import Path
 
+from io_utils import read_json
+
 GENERATED = "lecture_notes.md"
 EDITED = "lecture_notes.edited.md"
 HISTORY = "notes_history"
@@ -34,7 +36,8 @@ def get_active(wd):
         raise NotesMissing("Notatki nie zostaly jeszcze wygenerowane.")
     path = edited if edited.exists() else gen
     return {"md": path.read_text(encoding="utf-8"), "source": "edited" if path == edited else "generated",
-            "has_edited": edited.exists(), "has_generated": gen.exists(), "updated": path.stat().st_mtime}
+            "has_edited": edited.exists(), "has_generated": gen.exists(), "updated": path.stat().st_mtime,
+            "quality": read_json(wd / "notes_meta.json")}  # np. fragmenty z naprawionymi petlami powtorzen
 
 
 def _archive(wd, src):

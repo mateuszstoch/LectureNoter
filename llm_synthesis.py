@@ -6,8 +6,9 @@ from pathlib import Path
 
 from loguru import logger
 
-from io_utils import atomic_write_json, fmt_ts
+from io_utils import atomic_write_json, fmt_ts, read_json
 from ollama_client import OllamaClient
+from textguard import clean_heading, collapse_loops, has_loop
 
 SYSTEM = (
     "Jesteś asystentem akademickim. Otrzymujesz fragment chronologicznej osi wykładu: transkrypcję mowy "
@@ -27,7 +28,9 @@ SYSTEM = (
     "Nie dodawaj komentarzy o samej notatce (żadnych 'Uwagi', 'Ten fragment zawiera...'), "
     "nie numeruj fragmentów i nie pisz nagłówków typu 'Fragment 3'. "
     "Każdy temat opisuj tylko raz: jeśli został już opisany wcześniej (lista tematów poniżej), pomiń go "
-    "lub dodaj wyłącznie nowe informacje."
+    "lub dodaj wyłącznie nowe informacje. "
+    "Nigdy nie powtarzaj w kółko tego samego słowa, frazy ani zdania. Jeśli nie masz już nic do dodania, po prostu "
+    "zakończ sekcję. Nagłówki mają być krótkie (do ok. 8 słów)."
 )
 SUMMARY_SYSTEM = ("Na podstawie listy nagłówków notatek z wykładu napisz po polsku krótkie (5-8 zdań) "
                   "podsumowanie tematyki wykładu. Nie dodawaj informacji spoza nagłówków. "
@@ -70,6 +73,8 @@ def dedupe_board(frames, ratio=0.85):
 
 def build_timeline(transcript, vision):
     items = merge_speech(transcript) + dedupe_board(vision)
+    for it in items:  # petle z ASR/VLM zatruwalyby kontekst i prowokowaly kolejne petle w notatkach
+        it["text"] = collapse_loops(it["text"])
     items.sort(key=lambda i: (i["t"], i["kind"] != "Mowa"))
     return items
 
@@ -154,6 +159,69 @@ def headings(md, levels=("## ", "### ")):
     return [l.lstrip("#").strip() for l in md.splitlines() if l.startswith(levels)]
 
 
+def topic_list(notes, limit=30):
+    """Czyste, unikalne naglowki H2 (bez petli i smieci): trafiaja do listy 'tematy juz opisane', spisu i podsumowania."""
+    heads = [clean_heading(h) for n in notes for h in headings(n, ("## ",))]
+    return [h for h in dict.fromkeys(heads) if h][-limit:]
+
+
+def generate_checked(client, model, prompt, system, base_opts, retries, what=""):
+    """Generuje tekst i pilnuje jakosci: petle powtorzen i znaki CJK powoduja ponowienie z inna temperatura,
+    kara za powtorzenia i innym ziarnem. Po wyczerpaniu prob naprawia najlepszy wynik. Zwraca (tekst, proby, zdegradowany)."""
+    text = ""
+    for attempt in range(retries + 1):
+        opts = dict(base_opts)
+        if attempt:
+            opts["temperature"] = min(0.9, base_opts.get("temperature", 0.2) + 0.25 * attempt)
+            opts["repeat_penalty"] = base_opts.get("repeat_penalty", 1.1) + 0.08 * attempt
+            opts["seed"] = 1000 + attempt
+        text = clean_chunk_md(client.generate(model, prompt, system=system, options=opts, keep_alive="10m"))
+        looped, cjk = has_loop(text), bool(CJK.search(text))
+        if not looped and not cjk:
+            return text, attempt + 1, False
+        logger.warning(f"{what}: {'petla powtorzen' if looped else 'znaki CJK'} w odpowiedzi (proba {attempt + 1}/{retries + 1})")
+    return drop_cjk_lines(collapse_loops(text)), retries + 1, True
+
+
+def _norm_text(t):
+    return re.sub(r"\W+", " ", t.lower()).strip()
+
+
+def merge_duplicate_sections(notes, title_sim=0.85, body_sim=0.6):
+    """Kolejne fragmenty widza te same plansze, wiec ta sama definicja bywa opisana kilka razy. Sekcja H2 o (prawie) tym
+    samym tytule i podobnej tresci jak wczesniejsza jest pomijana (zostaje pierwsza). Zwraca (notatki, liczba pominietych)."""
+    seen, dropped, out = [], 0, []
+    for md in notes:
+        parts, cur_title, buf = [], None, []
+        for line in md.splitlines():
+            if line.startswith("## "):
+                parts.append((cur_title, "\n".join(buf)))
+                cur_title, buf = line[3:].strip(), [line]
+            else:
+                buf.append(line)
+        parts.append((cur_title, "\n".join(buf)))
+        kept = []
+        for title, text in parts:
+            if title is None:
+                kept.append(text)
+                continue
+            key, body = _norm_text(title), _norm_text(text)[:3000]
+            dup = False
+            for k, b in seen:
+                if difflib.SequenceMatcher(None, key, k).ratio() >= title_sim and \
+                        difflib.SequenceMatcher(None, body, b, autojunk=False).ratio() >= body_sim:
+                    dup = True
+                    break
+            if dup:
+                dropped += 1
+                logger.info(f"scalanie: pomijam powtorzona sekcja '{title[:60]}'")
+                continue
+            seen.append((key, body))
+            kept.append(text)
+        out.append("\n".join(k for k in kept if k is not None).strip())
+    return out, dropped
+
+
 def shift_headings(md, min_level=2):
     """Gwarantuje, ze notatka z chunku nie zawiera H1 (tytul dodaje skladanie)."""
     return re.sub(r"^#(?!#)", "##", md, flags=re.M) if min_level == 2 else md
@@ -178,47 +246,52 @@ def run_synthesis(workdir, cfg, model, num_ctx, client=None, progress=None):
     cdir.mkdir(exist_ok=True)
     client.check()
     client.assert_vram_free()
-    notes = []
+    notes, quality = [], {}
+    base_opts = {"num_ctx": num_ctx, "num_predict": cfg["num_predict"], "temperature": cfg["temperature"],
+                 "repeat_penalty": cfg.get("repeat_penalty", 1.1), "repeat_last_n": 256, "top_k": 40, "top_p": 0.9}
+    retries = cfg.get("loop_retries", 2)
     steps = len(chunks) + 1  # fragmenty + podsumowanie
     if progress:
         progress.update(0, steps, "notatki")
     try:
         for i, ch in enumerate(chunks, 1):
             path = cdir / f"chunk_{i:02d}.md"
+            meta_path = cdir / f"chunk_{i:02d}.json"
             if path.exists():
-                notes.append(clean_chunk_md(path.read_text(encoding="utf-8")))
+                raw = path.read_text(encoding="utf-8")
+                notes.append(collapse_loops(clean_chunk_md(raw)))  # naprawa petli takze w starym cache
+                quality[i] = read_json(meta_path, {"attempts": 1, "degraded": has_loop(raw)})
                 if progress:
                     progress.update(i, steps, f"fragment {i}/{len(chunks)} (z cache)")
                 continue
             logger.info(f"LLM fragment {i}/{len(chunks)} [{fmt_ts(ch[0]['t'])}-{fmt_ts(ch[-1]['t'])}]")
-            covered = [h for n in notes for h in headings(n, ("## ",))]
+            covered = topic_list(notes)
             covered_txt = ("Tematy już opisane we wcześniejszych notatkach (nie powtarzaj ich): "
-                           + "; ".join(dict.fromkeys(covered)) + "\n\n") if covered else ""
+                           + "; ".join(covered) + "\n\n") if covered else ""
             prompt = (f"{covered_txt}Poniżej materiał z kolejnego odcinka wykładu. "
                       f"Napisz notatki tylko z tego materiału, bez wstępu i bez podsumowania całości.\n\n"
                       + "\n".join(render(x) for x in ch))
-            opts = {"num_ctx": num_ctx, "num_predict": cfg["num_predict"], "temperature": cfg["temperature"]}
-            md = clean_chunk_md(client.generate(model, prompt, system=SYSTEM, options=opts, keep_alive="10m"))
-            if CJK.search(md):
-                logger.warning(f"fragment {i}: znaki CJK w odpowiedzi, ponawiam")
-                opts["temperature"] = 0.0
-                md = clean_chunk_md(client.generate(model, prompt, system=SYSTEM, options=opts, keep_alive="10m"))
-                md = drop_cjk_lines(md)
+            md, attempts, degraded = generate_checked(client, model, prompt, SYSTEM, base_opts, retries, f"fragment {i}")
             md = shift_headings(md)
             tmp = path.with_suffix(".tmp")
             tmp.write_text(md, encoding="utf-8")
             tmp.replace(path)
+            atomic_write_json(str(meta_path), {"attempts": attempts, "degraded": degraded})
+            quality[i] = {"attempts": attempts, "degraded": degraded}
             notes.append(md)
             if progress:
                 progress.update(i, steps, f"fragment {i}/{len(chunks)}")
-        heads = "\n".join("## " + h for h in dict.fromkeys(h for n in notes for h in headings(n, ("## ",))))
+        notes, dropped = merge_duplicate_sections(notes)
+        heads = "\n".join("## " + h for h in topic_list(notes, 60))
         summary = ""
         if heads:
-            summary = client.generate(model, heads, system=SUMMARY_SYSTEM,
-                                      options={"num_ctx": num_ctx, "num_predict": 500, "temperature": 0.2},
-                                      keep_alive="10m").strip()
-            if CJK.search(summary):
-                summary = drop_cjk_lines(summary)
+            summary, _, bad = generate_checked(client, model, heads, SUMMARY_SYSTEM,
+                                               {"num_ctx": num_ctx, "num_predict": 500, "temperature": 0.3,
+                                                "repeat_penalty": base_opts["repeat_penalty"], "repeat_last_n": 256},
+                                               1, "podsumowanie")
+            if bad or len(summary) < 40:
+                logger.warning("podsumowanie niewiarygodne po ponowieniach: pomijam je")
+                summary = ""
         if progress:
             progress.update(steps, steps, "podsumowanie")
     finally:
@@ -226,11 +299,20 @@ def run_synthesis(workdir, cfg, model, num_ctx, client=None, progress=None):
             client.unload(model)
         except Exception as e:
             logger.error(f"nie udalo sie rozladowac {model}: {e}")
-    toc = "\n".join(f"- {h}" for h in dict.fromkeys(headings("\n".join(notes), ("## ",))))
-    doc = ["# Notatki z wykładu", "", "## Podsumowanie", "", summary, "", "## Spis treści", "", toc, "", "---", ""]
+    toc = "\n".join(f"- {h}" for h in topic_list(notes, 200))
+    doc = ["# Notatki z wykładu", ""]
+    if summary:
+        doc += ["## Podsumowanie", "", summary, ""]
+    doc += ["## Spis treści", "", toc, "", "---", ""]
     for n in notes:
         doc += [n, ""]
     out = workdir / "lecture_notes.md"
     out.with_suffix(".tmp").write_text("\n".join(doc), encoding="utf-8")
     out.with_suffix(".tmp").replace(out)
+    degraded = sorted(k for k, v in quality.items() if v.get("degraded"))
+    atomic_write_json(str(workdir / "notes_meta.json"), {
+        "chunks": len(chunks), "degraded_chunks": degraded, "retried_chunks": sorted(k for k, v in quality.items() if v.get("attempts", 1) > 1),
+        "dropped_duplicate_sections": dropped, "summary_omitted": not summary, "model": model})
+    if degraded:
+        logger.warning(f"LLM: fragmenty z naprawionymi petlami powtorzen: {degraded}. Rozwaz ponowne wygenerowanie notatek.")
     return out

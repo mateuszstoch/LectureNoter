@@ -74,6 +74,7 @@ code { font-family: var(--mono); font-size: .88em; background: var(--sunk); padd
 .banner.warn { border-left-color: var(--warn); }
 .banner code { background: var(--sunk); }
 #view .banner { width: auto; max-width: none; margin: 14px 0 0; }
+.toolbar + .banner { margin: -8px 0 26px; }
 #view { max-width: 1080px; margin: 0 auto; padding: 28px 24px 64px; }
 
 /* --- przyciski i pola --- */

@@ -95,6 +95,10 @@ python main.py wyklad.mp4
 
 Ctrl+C przerywa pracę bezpiecznie (model zostaje rozładowany); ponowne uruchomienie wznawia. Brak ścieżki audio w pliku: ASR jest pomijany, a notatki powstają tylko z tablicy.
 
+## Jakość notatek (pętle powtórzeń modelu)
+
+Mały model potrafi „zapętlić się” („relacji relacji relacji…”). Generator to wykrywa i naprawia: pętle w odpowiedzi powodują ponowienie z inną temperaturą, karą za powtórzenia i ziarnem (do 2 razy), a jeśli się nie uda, powtórzenia są wycinane. Nagłówki trafiające do kolejnych fragmentów, podsumowania i spisu treści są czyszczone, żeby pętla nie „zarażała” następnych fragmentów. Pętle w opisach VLM i w transkrypcji ASR są usuwane przed syntezą, a powtórzone sekcje z kolejnych fragmentów (ta sama definicja z tej samej planszy) są scalane. Jeśli fragmenty musiały być naprawione, zakładka Notatki pokazuje ostrzeżenie (`notes_meta.json`) z propozycją ponownej generacji. Parametry: `llm.repeat_penalty` i `llm.loop_retries` w `config.yaml`.
+
 ## Wygląd
 
 Interfejs ma styl zeszytu akademickiego: papierowe tło, tusz i jeden czerwony akcent, krój szeryfowy dla treści (tytuły, notatki, czat), bezszeryfowy dla elementów interfejsu i monospace dla czasów. Jasny i ciemny motyw wybierają się według ustawień systemu. Czcionki (Source Serif 4, IBM Plex Sans, IBM Plex Mono; licencja SIL OFL, pliki w `ui/static/fonts/`) są wgrane lokalnie, więc aplikacja działa bez internetu. Ikony aplikacji generuje `python tools/make_icons.py`.

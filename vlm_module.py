@@ -8,6 +8,7 @@ from loguru import logger
 
 from io_utils import atomic_write_json, fmt_ts
 from ollama_client import OllamaClient, OllamaError
+from textguard import collapse_loops
 
 PROMPT = ("Extract all text, mathematical formulas, and code from this slide. "
           "Describe any charts or diagrams concisely. The content is a handwritten or typed whiteboard/slide "
@@ -29,7 +30,8 @@ def encode_image(path, max_side=MAX_SIDE):
 
 
 def clean_repetitions(text, max_chars=6000):
-    """Ucina zapetlone odpowiedzi (ten sam wiersz powtorzony wielokrotnie) i zbyt dlugie."""
+    """Ucina zapetlone odpowiedzi (ten sam wiersz lub slowo/fraza powtorzone wielokrotnie) i zbyt dlugie."""
+    text = collapse_loops(text)
     out, seen = [], {}
     for line in text.splitlines():
         key = line.strip()
