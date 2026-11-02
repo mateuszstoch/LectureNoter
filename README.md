@@ -46,6 +46,9 @@ Przydatne opcje:
 | `--from-stage asr\|frames\|vlm\|llm` | zacznij od wskazanego etapu |
 | `--only-stage ...` | uruchom tylko jeden etap |
 | `--force` | wymuś ponowne wykonanie etapów |
+| `--status` | wypisz stan etapów i postęp jako JSON (nic nie uruchamia) |
+
+Ctrl+C lub `kill <pid>` przerywa pracę bezpiecznie (model zostaje rozładowany, stan „cancelled”); ponowne uruchomienie wznawia od ostatniego checkpointu. W katalogu roboczym powstają `meta.json`, `progress.json` i `run_state.json` (stan na potrzeby interfejsu).
 
 Brak ścieżki audio w pliku: ASR jest pomijany, a notatki powstają tylko z tablicy.
 

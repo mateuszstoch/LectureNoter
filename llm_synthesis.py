@@ -159,7 +159,7 @@ def shift_headings(md, min_level=2):
     return re.sub(r"^#(?!#)", "##", md, flags=re.M) if min_level == 2 else md
 
 
-def run_synthesis(workdir, cfg, model, num_ctx, client=None):
+def run_synthesis(workdir, cfg, model, num_ctx, client=None, progress=None):
     workdir = Path(workdir)
     client = client or OllamaClient()
     tpath = workdir / "transcript.json"
@@ -179,11 +179,16 @@ def run_synthesis(workdir, cfg, model, num_ctx, client=None):
     client.check()
     client.assert_vram_free()
     notes = []
+    steps = len(chunks) + 1  # fragmenty + podsumowanie
+    if progress:
+        progress.update(0, steps, "notatki")
     try:
         for i, ch in enumerate(chunks, 1):
             path = cdir / f"chunk_{i:02d}.md"
             if path.exists():
                 notes.append(clean_chunk_md(path.read_text(encoding="utf-8")))
+                if progress:
+                    progress.update(i, steps, f"fragment {i}/{len(chunks)} (z cache)")
                 continue
             logger.info(f"LLM fragment {i}/{len(chunks)} [{fmt_ts(ch[0]['t'])}-{fmt_ts(ch[-1]['t'])}]")
             covered = [h for n in notes for h in headings(n, ("## ",))]
@@ -204,6 +209,8 @@ def run_synthesis(workdir, cfg, model, num_ctx, client=None):
             tmp.write_text(md, encoding="utf-8")
             tmp.replace(path)
             notes.append(md)
+            if progress:
+                progress.update(i, steps, f"fragment {i}/{len(chunks)}")
         heads = "\n".join("## " + h for h in dict.fromkeys(h for n in notes for h in headings(n, ("## ",))))
         summary = ""
         if heads:
@@ -212,6 +219,8 @@ def run_synthesis(workdir, cfg, model, num_ctx, client=None):
                                       keep_alive="10m").strip()
             if CJK.search(summary):
                 summary = drop_cjk_lines(summary)
+        if progress:
+            progress.update(steps, steps, "podsumowanie")
     finally:
         try:
             client.unload(model)

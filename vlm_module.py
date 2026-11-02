@@ -41,7 +41,7 @@ def clean_repetitions(text, max_chars=6000):
     return "\n".join(out)[:max_chars].strip()
 
 
-def run_vlm(workdir, cfg, client=None):
+def run_vlm(workdir, cfg, client=None, progress=None):
     workdir = Path(workdir)
     client = client or OllamaClient()
     meta = json.loads((workdir / "frames_metadata.json").read_text(encoding="utf-8"))
@@ -55,6 +55,8 @@ def run_vlm(workdir, cfg, client=None):
                     done[r["file"]] = r
     todo = [m for m in meta if m["file"] not in done]
     logger.info(f"VLM: {len(meta)} klatek, do zrobienia {len(todo)}")
+    if progress:
+        progress.update(len(done), len(meta), "opis klatek")
     if todo:
         client.check()
         client.assert_vram_free()
@@ -75,6 +77,8 @@ def run_vlm(workdir, cfg, client=None):
                     rec["error"] = str(e)
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 f.flush()
+                if progress:
+                    progress.update(len(done), len(meta), "opis klatek")
     finally:
         if todo:
             try:

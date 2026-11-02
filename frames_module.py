@@ -42,6 +42,8 @@ def iter_gray_samples(video, every_s, width, height):
             yield i, np.frombuffer(buf, np.uint8).reshape(height, width)
             i += 1
     finally:
+        if p.poll() is None:
+            p.kill()
         p.stdout.close()
         p.wait()
 
@@ -92,7 +94,7 @@ class Sample:
         self.idx, self.t, self.bbox, self.ink = idx, t, bbox, ink
 
 
-def select_states(video, meta, cfg):
+def select_states(video, meta, cfg, progress=None):
     """Zwraca liste Sample do zapisania (stan tablicy tuz przed wymazaniem/zmiana)."""
     every = cfg["sample_every_s"]
     aw = cfg["analysis_width"]
@@ -118,8 +120,11 @@ def select_states(video, meta, cfg):
         last_saved = s
 
     n = 0
+    total = int(meta["duration"] / every) + 1
     for idx, gray in iter_gray_samples(video, every, aw, ah):
         n += 1
+        if progress:
+            progress(n, total, "analiza obrazu")
         t = idx * every
         bbox = find_board(gray, cfg)
         cur = Sample(idx, t, bbox, ink_mask(gray, bbox, cfg)) if bbox else None
@@ -168,19 +173,21 @@ def grab_fullres(video, t):
     return cv2.imdecode(np.frombuffer(out, np.uint8), cv2.IMREAD_COLOR)
 
 
-def extract_frames(video, out_dir, cfg):
+def extract_frames(video, out_dir, cfg, progress=None):
     out_dir = Path(out_dir)
     frames_dir = out_dir / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
     meta = probe(video)
     logger.info(f"wideo {meta['width']}x{meta['height']} {meta['duration']:.0f}s audio={meta['has_audio']}")
-    states, ah = select_states(video, meta, cfg)
+    states, ah = select_states(video, meta, cfg, progress)
     if len(states) > cfg["max_frames"]:
         logger.warning(f"{len(states)} klatek > max_frames, obcinam")
         states = states[:cfg["max_frames"]]
     scale = meta["width"] / cfg["analysis_width"]
     out = []
-    for s in states:
+    for k, s in enumerate(states, 1):
+        if progress:
+            progress(k - 1, len(states), "zapis klatek")
         img = grab_fullres(video, s.t)
         x, y, w, h = s.bbox
         m = 8
@@ -190,6 +197,8 @@ def extract_frames(video, out_dir, cfg):
         name = f"frame_{s.idx:06d}_t{int(s.t):05d}.jpg"
         cv2.imwrite(str(frames_dir / name), crop, [cv2.IMWRITE_JPEG_QUALITY, cfg["jpeg_quality"]])
         out.append({"file": name, "timestamp": float(s.t), "index": s.idx})
+    if progress:
+        progress(len(states), max(len(states), 1), "zapis klatek")
     atomic_write_json(str(out_dir / "frames_metadata.json"), out)
     return out
 

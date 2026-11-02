@@ -21,10 +21,12 @@ def is_hallucination(text):
     return not t or any(t.startswith(h) and len(t) < 60 for h in HALLUCINATIONS)
 
 
-def run_asr(video, workdir, cfg, language="pl"):
+def run_asr(video, workdir, cfg, language="pl", progress=None):
     from faster_whisper import WhisperModel
     workdir = Path(workdir)
     wav = workdir / "audio.wav"
+    if progress:
+        progress.update(0, 1, "ekstrakcja audio")
     extract_audio(video, wav)
     model = WhisperModel(cfg["model"], device="cuda", compute_type=cfg["compute_type"])
     try:
@@ -35,6 +37,8 @@ def run_asr(video, workdir, cfg, language="pl"):
         for s in segments:
             if not is_hallucination(s.text):
                 out.append({"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text.strip()})
+            if progress:
+                progress.update(s.end, info.duration, "transkrypcja")
             if s.end >= next_log:
                 logger.info(f"ASR: {fmt_ts(s.end)} / {fmt_ts(info.duration)}")
                 next_log = s.end + 300
