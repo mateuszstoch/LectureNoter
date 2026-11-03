@@ -181,6 +181,7 @@ function renderSys() {
   if (sys && state.connected) {
     parts.push(chip(sys.ollama.ok ? "ok" : "bad", sys.ollama.ok ? "Ollama" : "Ollama: brak"));
     if (state.gpu) parts.push(chip("running", `GPU: ${state.gpu.owner}`));
+    if (sys.device === "cpu") parts.push(h("span", { class: "chip stale", title: "Nie wykryto GPU NVIDIA: lżejsze modele i znacznie wolniejsze przetwarzanie" }, "tryb CPU"));
     if (sys.vram && sys.vram.total_gb) {
       parts.push(h("span", { class: "chip" }, `VRAM ${sys.vram.used_gb?.toFixed(1) ?? "?"}/${sys.vram.total_gb.toFixed(0)} GB`));
     }
@@ -250,7 +251,7 @@ async function openAddDialog() {
     return h("label", { class: "file" }, cb, h("span", { class: "name" }, f.file),
       f.video_id ? chip("done", "dodany") : null, h("span", { class: "muted small" }, fmtSize(f.size)));
   });
-  const profile = h("select", {}, h("option", { value: "auto" }, "auto (wykryj VRAM)"), h("option", { value: "8gb" }, "8 GB"), h("option", { value: "16gb" }, "16 GB"));
+  const profile = h("select", {}, h("option", { value: "auto" }, "auto (wykryj sprzęt)"), h("option", { value: "8gb" }, "GPU 8 GB"), h("option", { value: "16gb" }, "GPU 16 GB"), h("option", { value: "cpu" }, "CPU (bez GPU, wolno)"));
   const go = async (enqueue) => {
     const sel = [...checks].filter(([, cb]) => cb.checked).map(([f]) => f);
     if (!sel.length) { toast("Zaznacz co najmniej jeden plik."); return; }
@@ -262,7 +263,7 @@ async function openAddDialog() {
   };
   body.replaceChildren(
     h("div", { class: "files" }, rows),
-    h("div", { class: "row", style: "margin-top:12px" }, h("span", { class: "muted small" }, "Profil VRAM:"), profile),
+    h("div", { class: "row", style: "margin-top:12px" }, h("span", { class: "muted small" }, "Profil sprzętowy:"), profile),
     h("div", { class: "actions" }, h("button", { onclick: closeDialog }, "Anuluj"),
       h("button", { onclick: () => go(false) }, "Tylko dodaj"), h("button", { class: "primary", onclick: () => go(true) }, "Dodaj i uruchom")));
 }

@@ -31,7 +31,7 @@ from diagnostics import hint_for
 from gpu_lock import GpuLock
 from io_utils import read_json
 from main import STAGES
-from ollama_client import OllamaClient, pick_profile, total_vram_gb, vram_used_gb
+from ollama_client import OllamaClient, apply_profile, has_cuda, pick_profile, total_vram_gb, vram_used_gb
 from ui import materials, notes as notes_mod
 from ui.chat import ChatBusy, ChatError, ChatService, ChatStore, export_markdown
 from ui.quiz import QuizError, QuizService
@@ -227,7 +227,8 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
                 "uptime_s": round(time.time() - app.state.started_at), **{k: v for k, v in read_mem().items() if k == "rss_mb"},
                 "paths": {"videos_dir": str(lib.videos_dir.resolve()), "work_dir": str(lib.work_dir.resolve())},
                 "vram": {"total_gb": total_vram_gb(), "used_gb": vram_used_gb()},
-                "models": {"vlm": C()["vlm"]["model"],
+                "device": "cuda" if has_cuda() else "cpu",
+                "models": {"vlm": apply_profile(C(), pick_profile(C()))["vlm"]["model"],
                            "llm": C()["profiles"][pick_profile(C())]["llm_model"]}}
 
     @app.get("/api/library/files")

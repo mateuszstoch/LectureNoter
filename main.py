@@ -19,7 +19,7 @@ from loguru import logger
 from diagnostics import describe_failure
 from gpu_lock import GpuLock
 from io_utils import atomic_write_json, read_json
-from ollama_client import OllamaClient, OllamaError, pick_profile, vram_used_gb
+from ollama_client import OllamaClient, OllamaError, apply_profile, pick_profile, vram_used_gb
 from progress import ProgressReporter, read_progress
 from run_state import Heartbeat, is_live, read_run_state, write_run_state
 
@@ -79,6 +79,7 @@ class PipelineOrchestrator:
         self.language = language
         self.profile = pick_profile(cfg, profile)
         self.prof = cfg["profiles"][self.profile]
+        self.cfg = cfg = apply_profile(cfg, self.profile)  # modele ASR/VLM zaleza od profilu (np. lzejsze na CPU)
         self.workdir.mkdir(parents=True, exist_ok=True)
         self.state_path = self.workdir / "stage_state.json"
         self.state = read_json(self.state_path, {})
@@ -376,7 +377,9 @@ class PipelineOrchestrator:
 
 def worker(stage, args, cfg):
     signal.signal(signal.SIGTERM, _raise_cancelled)  # pozwala wykonac 'finally' (rozladowanie modelu)
-    prof = cfg["profiles"][pick_profile(cfg, args.profile)]
+    profile = pick_profile(cfg, args.profile)
+    prof = cfg["profiles"][profile]
+    cfg = apply_profile(cfg, profile)
     rep = ProgressReporter(args.workdir, stage)
     try:
         if stage == "asr":
@@ -402,7 +405,7 @@ def main():
     ap.add_argument("video")
     ap.add_argument("--workdir", default=None, help="domyslnie work/<nazwa_filmu>")
     ap.add_argument("--language", default=None)
-    ap.add_argument("--profile", default="auto", choices=["auto", "8gb", "16gb"])
+    ap.add_argument("--profile", default="auto", choices=["auto", "8gb", "16gb", "cpu"])
     ap.add_argument("--config", default=str(ROOT / "config.yaml"))
     ap.add_argument("--from-stage", choices=STAGES)
     ap.add_argument("--only-stage", choices=STAGES)

@@ -64,8 +64,10 @@ def run_asr(video, workdir, cfg, language="pl", progress=None):
     extract_audio(video, wav)
     audio = load_wav16k(wav)
     logger.info(f"ASR: audio {len(audio) / 16000:.0f} s ({audio.nbytes / 1e6:.0f} MB w pamieci)")
-    logger.info(f"ASR: ladowanie modelu {cfg['model']} (cuda, {cfg['compute_type']})")
-    model = WhisperModel(cfg["model"], device="cuda", compute_type=cfg["compute_type"])
+    device = cfg.get("device", "cuda")
+    compute_type = cfg["compute_type"] if device == "cuda" else ("int8" if "float16" in cfg["compute_type"] else cfg["compute_type"])
+    logger.info(f"ASR: ladowanie modelu {cfg['model']} ({device}, {compute_type})")
+    model = WhisperModel(cfg["model"], device=device, compute_type=compute_type)
     logger.info("ASR: model zaladowany, start transkrypcji")
     try:
         segments, info = model.transcribe(

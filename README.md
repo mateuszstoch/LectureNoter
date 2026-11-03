@@ -29,7 +29,7 @@ Wyniki trafiają do `work/<nazwa_filmu>/`. Przerwane przetwarzanie wznawia się 
 
 Backend działa na **Linuksie**. Na Windowsie uruchamiasz go w **WSL2** (nie natywnie).
 
-- karta NVIDIA ze sterownikiem (w WSL `nvidia-smi` ma pokazywać kartę; sterownik instalujesz tylko w Windowsie)
+- karta NVIDIA ze sterownikiem (w WSL `nvidia-smi` ma pokazywać kartę; sterownik instalujesz tylko w Windowsie); bez karty działa tryb CPU (patrz niżej)
 - Python 3.10+ (zalecany 3.11), `ffmpeg`, [Ollama](https://ollama.com) uruchomiona w WSL/Linuksie
 - opcjonalnie `pandoc` (eksport notatek do Worda)
 
@@ -72,6 +72,12 @@ Zmienne: `LECTURENOTER_VENV` (katalog środowiska), `LECTURENOTER_PYTHON`. Pozos
 - Pamięć WSL zwiększysz w `%UserProfile%\.wslconfig` (`[wsl2]`, `memory=24GB`), potem `wsl --shutdown`.
 - Windows zajmuje ok. 0,5–1 GB VRAM; na karcie 8 GB zamknij inne programy używające GPU.
 - Błąd `libcublas.so.12 is not found`: uruchom ponownie skrypt startowy (doinstaluje zależności) albo usuń katalog venv.
+
+### Tryb CPU (bez GPU)
+
+Gdy nie wykryto karty NVIDIA, aplikacja sama wybiera profil `cpu`: transkrypcja `faster-whisper` na CPU (model `small`, `int8`), lżejsze modele Ollamy (`qwen2.5:3b-instruct`, `qwen2.5vl:3b`) i mniejszy kontekst. W pasku u góry pojawia się znacznik „tryb CPU”. Potrzebne modele: `ollama pull qwen2.5:3b-instruct` i `ollama pull qwen2.5vl:3b`. Profil można też wybrać ręcznie (przy dodawaniu filmu albo `--profile cpu`), a wykrywanie wymusić zmienną `LECTURENOTER_DEVICE=cpu|cuda`.
+
+Spodziewaj się czasu wielokrotnie dłuższego niż na GPU: transkrypcja zbliżona do czasu nagrania lub dłuższa, odczyt tablicy (VLM) to nawet godziny przy dłuższym wykładzie, a quiz na 20 pytań to dziesiątki minut. Jakość małych modeli jest niższa (zwłaszcza odczyt pisma odręcznego). Importowane wykłady (`.lec`), czytanie notatek, wyszukiwanie i quizy z gotowych notatek działają bez ograniczeń poza szybkością modelu. Parametry profilu są w `config.yaml` (`profiles.cpu`).
 
 ## Funkcje aplikacji
 

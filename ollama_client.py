@@ -3,6 +3,7 @@ import http.client
 import json
 import os
 import queue
+import shutil
 import socket
 import threading
 import time
@@ -195,17 +196,49 @@ def total_vram_gb():
         return None
 
 
+def has_cuda():
+    """Czy jest GPU NVIDIA. LECTURENOTER_DEVICE=cuda|cpu wymusza wynik (np. do testow lub celowej pracy na CPU)."""
+    forced = os.environ.get("LECTURENOTER_DEVICE", "").strip().lower()
+    if forced in ("cuda", "cpu"):
+        return forced == "cuda"
+    return total_vram_gb() is not None or shutil.which("nvidia-smi") is not None
+
+
 def pick_profile(cfg, requested="auto"):
+    """Profil sprzetowy: wskazany jawnie albo wykryty (brak GPU -> 'cpu', inaczej wg VRAM)."""
+    global _warned_no_vram
     if requested in cfg["profiles"]:
         return requested
+    if not has_cuda() and "cpu" in cfg["profiles"]:
+        if not _warned_no_vram:  # ta funkcja jest wolana przy kazdym odswiezeniu stanu: ostrzegaj raz
+            logger.warning("nie wykryto GPU NVIDIA: tryb CPU (mniejsze modele, znacznie wolniej)")
+            _warned_no_vram = True
+        return "cpu"
     gb = total_vram_gb()
     if gb is None:
-        global _warned_no_vram
-        if not _warned_no_vram:  # ta funkcja jest wolana przy kazdym odswiezeniu stanu: ostrzegaj raz
-            logger.warning("nie wykryto VRAM (brak NVML/GPU), wybieram profil 8gb")
+        if not _warned_no_vram:
+            logger.warning("nie wykryto VRAM (brak NVML), wybieram profil 8gb")
             _warned_no_vram = True
         return "8gb"
     return "16gb" if gb >= 14 else "8gb"
+
+
+def apply_profile(cfg, profile):
+    """Kopia konfiguracji z nadpisaniami profilu: model odczytu tablicy (vlm_model) oraz transkrypcji
+    (asr_model, asr_compute_type) i urzadzenie ASR (cuda/cpu)."""
+    prof = cfg["profiles"][profile]
+    out = dict(cfg)
+    out["asr"] = dict(cfg["asr"])
+    if profile == "cpu":  # dla GPU klucz nie powstaje, wiec podpis etapu ASR (i wyniki sprzed aktualizacji) sie nie zmieniaja
+        out["asr"]["device"] = "cpu"
+    if prof.get("asr_model"):
+        out["asr"]["model"] = prof["asr_model"]
+    if prof.get("asr_compute_type"):
+        out["asr"]["compute_type"] = prof["asr_compute_type"]
+    out["vlm"] = dict(cfg["vlm"])
+    if prof.get("vlm_model"):
+        out["vlm"]["model"] = prof["vlm_model"]
+    return out
 
 
 def vram_used_gb():

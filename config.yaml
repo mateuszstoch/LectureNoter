@@ -3,6 +3,8 @@ paths: { videos_dir: videos, work_dir: work }
 profiles:
   8gb:  { llm_model: "qwen2.5:7b-instruct",  num_ctx: 16384 }
   16gb: { llm_model: "qwen2.5:14b-instruct", num_ctx: 24576 }
+  # bez GPU NVIDIA (wybierany automatycznie): lzejsze modele, wielokrotnie wolniej; ASR na CPU (int8)
+  cpu:  { llm_model: "qwen2.5:3b-instruct",  num_ctx: 8192, vlm_model: "qwen2.5vl:3b", asr_model: "small", asr_compute_type: "int8" }
 asr: { model: large-v3-turbo, compute_type: int8_float16, vad_filter: true, beam_size: 5 }
 frames:
   sample_every_s: 2
