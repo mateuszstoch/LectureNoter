@@ -33,7 +33,7 @@ from io_utils import read_json
 from main import STAGES
 from ollama_client import OllamaClient, apply_profile, has_cuda, pick_profile, total_vram_gb, vram_used_gb
 from ui import materials, notes as notes_mod
-from ui.chat import ChatBusy, ChatError, ChatService, ChatStore, export_markdown
+from ui.chat import GLOBAL, ChatBusy, ChatError, ChatService, ChatStore, export_markdown
 import suggestions as sugg
 from ui import explain as explain_mod, glossary as gloss_mod, verify as verify_mod
 from ui import flashcards as fc_mod, progress as progress_mod
@@ -111,6 +111,7 @@ class NotesBody(BaseModel):
 
 class ChatCreate(BaseModel):
     title: str | None = None
+    scope: str | None = None   # tylko czat ogolny: identyfikator folderu (None = wszystkie wykłady)
 
 
 class ChatMessage(BaseModel):
@@ -210,6 +211,14 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
     ollama = ollama or OllamaClient(timeout=C().get("chat", {}).get("timeout_s", 600))
     chat = ChatService(lib, gpu, cfg, ollama)
     quizzes = QuizService(lib, chat, cfg, ollama)
+
+    def scope_ids(scope):
+        """Wyklady z folderu (z podfolderami) dla czatu ogolnego; None = wszystkie."""
+        if not scope or not folders.exists(scope):
+            return None
+        ids = folders.descendants(scope)
+        return {vid for vid, meta in lib.iter_meta() if meta.get("folder") in ids}
+    chat.scope_ids = scope_ids
     jm.set_preempt(chat.preempt)  # zadanie czekajace na GPU zwalnia model czatu (gdy ten nie generuje)
     app.state.chat, app.state.tracker, app.state.is_busy = chat, tracker, is_busy
     app.state.quizzes = quizzes
@@ -572,6 +581,10 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
         return materials.context_at(wd_of(vid), t)
 
     # --- czat ---
+    def chat_wd(vid):
+        """Katalog rozmow: wyklad albo wspolny czat po wszystkich wykladach (wirtualny identyfikator '_all')."""
+        return chat.chat_dir(GLOBAL) if vid == GLOBAL else wd_of(vid)
+
     def chat_guard(fn):
         try:
             return fn()
@@ -592,35 +605,34 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
 
     @app.get("/api/videos/{vid}/chats")
     def chats(vid: str):
-        return ChatStore(wd_of(vid)).list()
+        return ChatStore(chat_wd(vid)).list()
 
     @app.post("/api/videos/{vid}/chats")
     def chat_new(vid: str, req: ChatCreate):
-        return ChatStore(wd_of(vid)).create(req.title)
+        return ChatStore(chat_wd(vid)).create(req.title, req.scope if vid == GLOBAL else None)
 
     @app.get("/api/videos/{vid}/chats/{cid}")
     def chat_get(vid: str, cid: str):
-        return chat_guard(lambda: ChatStore(wd_of(vid)).get(cid))
+        return chat_guard(lambda: ChatStore(chat_wd(vid)).get(cid))
 
     @app.get("/api/videos/{vid}/chats/{cid}/export")
     def chat_export(vid: str, cid: str, format: str = "md"):
         if format != "md":
             raise HTTPException(400, "format: md (PDF: drukowanie z przegladarki)")
-        wd = wd_of(vid)
+        wd = chat_wd(vid)
         chat_ = chat_guard(lambda: ChatStore(wd).get(cid))
-        title = (read_json(wd / "meta.json", {}) or {}).get("title")
+        title = "Wszystkie wykłady" if vid == GLOBAL else (read_json(wd / "meta.json", {}) or {}).get("title")
         return Response(export_markdown(chat_, title), media_type="text/markdown; charset=utf-8",
                         headers={"Content-Disposition": f'attachment; filename="{vid}-rozmowa-{cid}.md"'})
 
     @app.delete("/api/videos/{vid}/chats/{cid}")
     def chat_delete(vid: str, cid: str):
-        chat_guard(lambda: ChatStore(wd_of(vid)).delete(cid))
+        chat_guard(lambda: ChatStore(chat_wd(vid)).delete(cid))
         return {"ok": True}
 
     @app.post("/api/videos/{vid}/chats/{cid}/messages")
     async def chat_message(vid: str, cid: str, req: ChatMessage, request: Request):
-        wd_of(vid)
-        chat_guard(lambda: ChatStore(wd_of(vid)).get(cid))
+        chat_guard(lambda: ChatStore(chat_wd(vid)).get(cid))
 
         def sse(event, data):
             return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"

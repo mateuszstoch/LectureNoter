@@ -31,6 +31,9 @@ SUMMARY_PROMPT = (
     "o co użytkownik pytał, kluczowe odpowiedzi i otwarte wątki. Nie dodawaj nic od siebie.\n\n"
     "Dotychczasowe streszczenie:\n{summary}\n\nNowe wiadomości do uwzględnienia:\n{messages}\n\nNowe streszczenie:"
 )
+GLOBAL = "_all"      # wirtualny identyfikator "wykladu" dla czatu po wszystkich wykladach
+SYSTEM_GLOBAL_EXTRA = (" 7) Fragmenty pochodzą z RÓŻNYCH wykładów i są oznaczone tytułem wykładu i sekcją: przy każdym twierdzeniu podaj, "
+                       "z którego wykładu pochodzi (np. (Wykład: tytuł, sekcja)); przy rozbieżnościach między wykładami wskaż je.")
 KEEP_RAW = 4          # tyle ostatnich wiadomosci zawsze zostaje w oryginale
 MAX_QUESTION = 4000
 
@@ -83,16 +86,17 @@ class ChatStore:
     def list(self):
         with self._lock:
             return sorted(({"id": c.get("id"), "title": c.get("title") or "Rozmowa", "created": c.get("created", 0),
-                            "updated": c.get("updated", c.get("created", 0)), "count": len(c.get("messages", [])), "model": c.get("model")}
+                            "updated": c.get("updated", c.get("created", 0)), "count": len(c.get("messages", [])), "model": c.get("model"),
+                            "scope": c.get("scope")}
                            for c in self._load()["chats"] if c.get("id")),
                           key=lambda c: c["updated"], reverse=True)
 
-    def create(self, title=None):
+    def create(self, title=None, scope=None):
         with self._lock:
             data = self._load()
             now = time.time()
             chat = {"id": uuid.uuid4().hex[:8], "title": title or "Nowa rozmowa", "created": now, "updated": now,
-                    "messages": [], "summary": "", "summarized_upto": 0, "model": None, "auto_title": not title}
+                    "messages": [], "summary": "", "summarized_upto": 0, "model": None, "auto_title": not title, "scope": scope}
             data["chats"].append(chat)
             self._save(data)
             return chat
@@ -137,6 +141,15 @@ class ChatService:
         self._model = None
         self._timer = None
         self._idle_at = None
+        self.global_dir = Path(self.lib.work_dir) / ".global"
+        self.scope_ids = lambda scope: None   # (folder) -> zbior id wykladow albo None = wszystkie; ustawiane przez serwer
+
+    def chat_dir(self, video_id):
+        """Katalog rozmow: wyklad albo wspolny katalog czatu po wszystkich wykladach."""
+        if video_id == GLOBAL:
+            self.global_dir.mkdir(exist_ok=True)
+            return self.global_dir
+        return self.lib.workdir(video_id)
 
     @property
     def cfg(self):
@@ -271,7 +284,43 @@ class ChatService:
             upto = chat["summarized_upto"] + n_fold
             chat = store.update(cid, lambda c: c.update(summary=summary, summarized_upto=upto))
 
-    def build_messages(self, question, chat, wd, model):
+    def _global_context(self, question, history, scope, budget):
+        """Kontekst z wielu wykladow: sekcje notatek wszystkich (lub wybranych) wykladow, wybrane BM25. (tekst, zrodla)."""
+        from ui.retrieval import BM25, split_notes, tokens, _fit
+        allowed = self.scope_ids(scope)
+        secs = []
+        for vid, meta in self.lib.iter_meta():
+            if allowed is not None and vid not in allowed:
+                continue
+            try:
+                md = notes_mod.get_active(self.lib.workdir(vid))["md"]
+            except notes_mod.NotesError:
+                continue
+            for s_ in split_notes(md):
+                if s_["text"].strip() and s_["title"] not in ("Spis treści", "Podsumowanie"):
+                    secs.append({"vid": vid, "lecture": meta.get("title") or vid, "title": s_["title"], "text": s_["text"]})
+        if not secs:
+            return "", []
+        prev_q = next((m["content"] for m in reversed(history) if m["role"] == "user"), "")
+        q = tokens(question) * 2 + tokens(prev_q)
+        sc = BM25([tokens(f"{x['lecture']} {x['title']} {x['text']}") for x in secs]).scores(q)
+        ranked = [x for _, x in sorted(zip(sc, secs), key=lambda p: -p[0]) if _ > 0] or secs[:4]
+        chosen = _fit(ranked, budget, lambda x: f"[Wykład: {x['lecture']} · {x['title']}]\n{x['text']}")
+        ctx = "\n\n".join(f"[Wykład: {x['lecture']} · {x['title']}]\n{x['text']}" for x in chosen)
+        return ctx, [{"kind": "lecture", "label": f"{x['lecture']} · {x['title']}", "video_id": x["vid"], "section": x["title"]} for x in chosen]
+
+    def _lectures_with_notes(self, scope):
+        allowed = self.scope_ids(scope)
+        for vid, _ in self.lib.iter_meta():
+            if allowed is not None and vid not in allowed:
+                continue
+            try:
+                notes_mod.get_active(self.lib.workdir(vid))
+                yield vid
+            except notes_mod.NotesError:
+                continue
+
+    def build_messages(self, question, chat, wd, model, is_global=False):
         """Zwraca (messages dla Ollamy, zrodla)."""
         num_ctx = self.num_ctx()
         predict = self.ccfg.get("num_predict", 1200)
@@ -283,9 +332,12 @@ class ChatService:
         summary_txt = f"\n\n# Streszczenie wcześniejszej rozmowy\n{chat['summary']}" if chat["summary"] else ""
         fixed = est_tokens(SYSTEM_CHAT) + est_tokens(summary_txt) + est_tokens(question) \
             + sum(est_tokens(m["content"]) for m in history) + 200
-        notes_md, transcript, vision = self._materials(wd)
-        ctx, sources = build_context(question, history, notes_md, transcript, vision, max(500, total - fixed))
-        system = f"{SYSTEM_CHAT}{summary_txt}\n\n# Fragmenty wykładu\n{ctx or '(brak materiałów)'}"
+        if is_global:
+            ctx, sources = self._global_context(question, history, chat.get("scope"), max(500, total - fixed))
+        else:
+            notes_md, transcript, vision = self._materials(wd)
+            ctx, sources = build_context(question, history, notes_md, transcript, vision, max(500, total - fixed))
+        system = f"{SYSTEM_CHAT}{SYSTEM_GLOBAL_EXTRA if is_global else ''}{summary_txt}\n\n# Fragmenty wykładu\n{ctx or '(brak materiałów)'}"
         return [{"role": "system", "content": system}, *history, {"role": "user", "content": question}], sources
 
     # ---------- odpowiedz (generator zdarzen) ----------
@@ -298,13 +350,18 @@ class ChatService:
         if len(content) > MAX_QUESTION:
             yield "error", f"Pytanie jest zbyt długie (limit {MAX_QUESTION} znaków)."
             return
-        wd = self.lib.workdir(video_id)
+        is_global = video_id == GLOBAL
+        wd = self.chat_dir(video_id)
         store = ChatStore(wd)
         try:
             chat = store.get(chat_id)
-            notes_md, transcript, _ = self._materials(wd)
-            if not notes_md and not transcript:
-                raise ChatError("Brak notatek i transkryptu: najpierw przetwórz film.")
+            if is_global:
+                if not any(True for _ in self._lectures_with_notes(chat.get("scope"))):
+                    raise ChatError("Brak notatek w wybranym zakresie: najpierw przetwórz jakieś wykłady.")
+            else:
+                notes_md, transcript, _ = self._materials(wd)
+                if not notes_md and not transcript:
+                    raise ChatError("Brak notatek i transkryptu: najpierw przetwórz film.")
             model = model or chat.get("model") or self.default_model()
             try:
                 installed = self.client.installed_models()
@@ -319,7 +376,7 @@ class ChatService:
         answer, sources, stopped, failed, user_added = [], [], True, None, False
         self._gen_video = video_id
         try:
-            messages, sources = self.build_messages(content, chat, wd, model)
+            messages, sources = self.build_messages(content, chat, wd, model, is_global)
             now = time.time()
 
             def add_user(c):

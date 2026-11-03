@@ -12,6 +12,9 @@ async function regenerateSuggestions(videoId) {
 function mountChatTab(container, videoId) {
   let chats = [], current = null, streaming = null; // streaming: { controller }
   let sugg = { keywords: [], questions: [], source: "none" };
+  const isAll = videoId === "_all";               // czat po wszystkich wykładach (lub wybranym folderze)
+  const scopeSel = h("select", { "aria-label": "Zakres czatu", title: "Z jakich wykładów korzysta nowa rozmowa", style: "width:100%;margin-bottom:8px" },
+    h("option", { value: "" }, "Wszystkie wykłady"), ...(state.folders || []).map((f) => h("option", { value: f.id }, `Folder: ${folderPathName(f.id)}`)));
   const MODEL_KEY = "lecturenoter.chatModel";
   const root = h("div", { class: "chat-layout" });
   container.replaceChildren(root);
@@ -21,13 +24,13 @@ function mountChatTab(container, videoId) {
   root.append(side, main);
 
   const msgBox = h("div", { class: "chat-msgs", "aria-live": "polite" });
-  const input = h("textarea", { class: "chat-input", rows: "2", placeholder: "Zadaj pytanie o ten wykład… (Enter wysyła, Shift+Enter nowa linia)", "aria-label": "Pytanie" });
+  const input = h("textarea", { class: "chat-input", rows: "2", placeholder: (videoId === "_all" ? "Zadaj pytanie o swoje wykłady… " : "Zadaj pytanie o ten wykład… ") + "(Enter wysyła, Shift+Enter nowa linia)", "aria-label": "Pytanie" });
   const sendBtn = h("button", { class: "primary", onclick: () => send() }, "Wyślij");
   const stopBtn = h("button", { class: "danger", hidden: true, onclick: () => stop() }, "Stop");
   const modelSel = h("select", { "aria-label": "Model czatu", onchange: () => localStorage.setItem(MODEL_KEY, modelSel.value) });
   const statusEl = h("span", { class: "muted small" });
   const notice = h("div", { class: "banner warn", hidden: true, style: "margin:0 0 8px" });
-  const suggBox = h("details", { class: "sugg" });
+  const suggBox = h("details", { class: "sugg", hidden: true });
   const releaseBtn = h("button", { class: "small", title: "Rozładuj model czatu z pamięci GPU", onclick: releaseGpu }, "Zwolnij GPU");
   const mdLink = h("a", { class: "btn small", href: "#", download: "rozmowa.md", title: "Pobierz rozmowę jako Markdown" }, "Markdown");
   const pdfBtn = h("button", { class: "small", title: "Otwiera okno drukowania: wybierz „Zapisz jako PDF”", onclick: () => printChat() }, "PDF");
@@ -42,7 +45,7 @@ function mountChatTab(container, videoId) {
       h("div", { class: "row" }, statusEl, releaseBtn, h("span", { class: "muted small" }, "Eksport:"), mdLink, pdfBtn)),
     notice, suggBox, msgBox,
     h("div", { class: "chat-form" }, input, h("div", { class: "row", style: "justify-content:flex-end" }, stopBtn, sendBtn)),
-    h("div", { class: "muted small", style: "margin-top:6px" }, "Odpowiedzi opierają się na automatycznie wygenerowanych notatkach i transkrypcie (mogą zawierać błędy). Wszystko działa lokalnie."));
+    h("div", { class: "muted small", style: "margin-top:6px" }, isAll ? "Odpowiedzi opierają się na notatkach wybranych wykładów (mogą zawierać błędy); przy każdym fragmencie widać, z którego wykładu pochodzi. Wszystko działa lokalnie." : "Odpowiedzi opierają się na automatycznie wygenerowanych notatkach i transkrypcie (mogą zawierać błędy). Wszystko działa lokalnie."));
 
   function paintSuggestions() {
     const fill = (text) => { input.value = text; input.focus(); };
@@ -99,12 +102,14 @@ function mountChatTab(container, videoId) {
   }
 
   function renderSide() {
-    side.replaceChildren(
+    side.replaceChildren(...kids(
+      isAll ? scopeSel : null,
       h("button", { class: "primary", disabled: !!streaming, onclick: newChat }, "Nowa rozmowa"),
       h("div", { class: "chat-list" }, chats.length ? chats.map((c) => h("div", { class: `chat-item${current && current.id === c.id ? " active" : ""}` },
-        h("a", { href: "#", onclick: (e) => { e.preventDefault(); if (!streaming) openChat(c.id); }, title: c.title }, c.title),
+        h("a", { href: "#", onclick: (e) => { e.preventDefault(); if (!streaming) openChat(c.id); }, title: c.title }, c.title,
+          isAll ? h("span", { class: "muted small", style: "display:block" }, c.scope ? `Folder: ${folderPathName(c.scope) || "usunięty"}` : "Wszystkie wykłady") : null),
         h("button", { class: "small danger", title: "Usuń rozmowę", disabled: !!streaming, onclick: () => delChat(c.id) }, "✕")))
-        : h("div", { class: "muted small", style: "padding:8px 2px" }, "Brak rozmów.")));
+        : h("div", { class: "muted small", style: "padding:8px 2px" }, "Brak rozmów."))));
   }
 
   async function openChat(id) {
@@ -113,7 +118,7 @@ function mountChatTab(container, videoId) {
     renderMessages();
   }
   async function newChat() {
-    try { const c = await api(`/api/videos/${videoId}/chats`, { method: "POST", body: {} }); await loadChats(c.id); input.focus(); } catch (e) { toast(e.message); }
+    try { const c = await api(`/api/videos/${videoId}/chats`, { method: "POST", body: isAll ? { scope: scopeSel.value || null } : {} }); await loadChats(c.id); input.focus(); } catch (e) { toast(e.message); }
   }
   async function delChat(id) {
     const title = (chats.find((c) => c.id === id) || {}).title || "ta rozmowa";
@@ -140,7 +145,7 @@ function mountChatTab(container, videoId) {
     if (!current || !current.messages.length) return;
     const area = h("article", { id: "print-area", class: "print-chat" },
       h("h1", {}, current.title),
-      h("div", { class: "meta" }, [(videoById(videoId) || {}).title, current.model, fmtDate(current.created)].filter(Boolean).join("  ·  ")),
+      h("div", { class: "meta" }, [isAll ? "Wszystkie wykłady" : (videoById(videoId) || {}).title, current.model, fmtDate(current.created)].filter(Boolean).join("  ·  ")),
       current.messages.map((m) => {
         const body = h("div", { class: "pc-body notes-body" });
         if (m.role === "user") body.textContent = m.content; else setAssistant(body, m.content);
@@ -161,7 +166,12 @@ function mountChatTab(container, videoId) {
     return h("details", { class: "sources" }, h("summary", { class: "small muted" }, `Użyte fragmenty (${sources.length})`),
       h("div", { class: "row", style: "gap:6px;margin-top:6px" }, sources.map((s) => (s.t != null
         ? h("button", { class: "small", title: "Pokaż kontekst", onclick: () => openContextDialog(videoId, s.t) }, s.label)
-        : h("span", { class: "chip" }, `Notatki: ${s.label}`)))));
+        : s.kind === "lecture"
+          ? h("button", { class: "small", title: "Otwórz notatki tego wykładu", onclick: () => {
+            window.pendingNotesFocus = { videoId: s.video_id, terms: [], heading: s.section };
+            location.hash = `#/video/${s.video_id}/notes`;
+          } }, s.label)
+          : h("span", { class: "chip" }, `Notatki: ${s.label}`)))));
   }
 
   function bubble(m) {
@@ -184,7 +194,9 @@ function mountChatTab(container, videoId) {
     } else if (!current.messages.length) {
       msgBox.replaceChildren(h("div", { class: "empty" }, "Zadaj pytanie o ten wykład.",
         h("div", { class: "row", style: "margin-top:12px;gap:8px" },
-          (sugg.questions.length ? sugg.questions.slice(0, 4) : ["Podsumuj ten wykład w punktach", "Jakie są najważniejsze definicje?"]).map((q) =>
+          (sugg.questions.length ? sugg.questions.slice(0, 4) : isAll
+            ? ["Porównaj, jak poszczególne wykłady wyjaśniają to samo pojęcie", "Które wykłady dotyczą algorytmów i co w nich jest najważniejsze?", "Zrób listę najważniejszych definicji ze wszystkich wykładów"]
+            : ["Podsumuj ten wykład w punktach", "Jakie są najważniejsze definicje?"]).map((q) =>
             h("button", { class: "small", onclick: () => { input.value = q; send(); } }, q)))));
     } else {
       msgBox.replaceChildren(...current.messages.map(bubble));
@@ -275,5 +287,5 @@ function mountChatTab(container, videoId) {
     window.pendingChatPrompt = null;
     setTimeout(() => input.focus(), 50);
   }
-  fetchSuggestions(videoId).then((d) => { sugg = d; paintSuggestions(); renderMessages(); });
+  if (!isAll) fetchSuggestions(videoId).then((d) => { sugg = d; paintSuggestions(); renderMessages(); });
 }

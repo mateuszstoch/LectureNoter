@@ -202,3 +202,14 @@ async function mountProgressView() {
   view.replaceChildren(h("div", { class: "row spread", style: "flex-wrap:wrap" }, h("h1", {}, "Postępy w nauce"), h("div", { class: "row" }, fsel, ssel)), body);
   paint();
 }
+
+// ---------- czat po wszystkich wykładach ----------
+function mountGlobalChat() {
+  const view = $("#view");
+  activeTab = null;
+  view.classList.add("wide");
+  const content = h("div", {});
+  view.replaceChildren(h("h1", {}, "Czat po wszystkich wykładach"),
+    h("p", { class: "muted", style: "margin:-6px 0 16px" }, "Pytania do notatek całej biblioteki lub wybranego folderu."), content);
+  mountChatTab(content, "_all");
+}

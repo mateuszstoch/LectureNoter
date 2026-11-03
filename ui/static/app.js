@@ -527,6 +527,11 @@ function route() {
     return;
   }
   lastHash = location.hash || "#/";
+  if (location.hash === "#/chat") {
+    detailId = null; stopLogs();
+    mountGlobalChat();
+    return;
+  }
   if (location.hash === "#/progress") {
     detailId = null; stopLogs();
     $("#view").classList.remove("wide");
@@ -556,7 +561,7 @@ function rerender() {
   if (state.stopped) return;
   renderSys();
   updateBanner();
-  if (location.hash === "#/logs" || location.hash === "#/progress") return;
+  if (["#/logs", "#/progress", "#/chat"].includes(location.hash)) { if (location.hash === "#/chat" && activeTab && activeTab.onState) activeTab.onState(); return; }
   if (detailId && location.hash.startsWith("#/video/")) updateDetail();
   else renderLibrary();
 }

@@ -108,3 +108,43 @@ def test_cards_from_wrong_quiz_answers_and_progress(fcl):
     row = next(x for x in p if x["id"] == "ok")
     assert row["quizzes"] == 1 and row["attempts"] == 1 and row["passed"] is False and row["best"] == pytest.approx(66.7, abs=0.1)
     assert len(row["weak"]) == 1 and row["cards"] == 1 and row["cards_due"] == 1
+
+
+# ---------- czat po wszystkich wykladach ----------
+def test_global_chat_across_lectures_with_scope(env):
+    from test_ui import FakeOllama, parse_sse
+    lib, gpu, jm, videos, work = env
+    lib.add_video("ok.mp4")
+    lib.add_video("other.mp4")
+    (lib.workdir("ok") / "lecture_notes.md").write_text(NOTES, encoding="utf-8")
+    (lib.workdir("other") / "lecture_notes.md").write_text("# Notatki\n## Grafy\nGraf jest spójny, gdy istnieje ścieżka między każdą parą wierzchołków.\n", encoding="utf-8")
+    fake = FakeOllama()
+    app = create_app(CFG, videos, work, jobs=jm, start_jobs=False, extra_hosts=("testserver",), ollama=fake)
+    c = TestClient(app)
+    cid = c.post("/api/videos/_all/chats", json={}).json()["id"]
+    ev = parse_sse(c.post(f"/api/videos/_all/chats/{cid}/messages", json={"content": "Kiedy graf jest spójny?"}).text)
+    assert ev[-1][0] == "done"
+    sources = next(d for e, d in ev if e == "sources")
+    assert any(s["kind"] == "lecture" and s["video_id"] == "other" and s["section"] == "Grafy" for s in sources)
+    sys_prompt = fake.calls[-1]["messages"][0]["content"]
+    assert "RÓŻNYCH wykładów" in sys_prompt and "[Wykład: " in sys_prompt
+    assert c.get("/api/videos/_all/chats").json()[0]["count"] == 2
+    assert c.get(f"/api/videos/_all/chats/{cid}/export").status_code == 200
+    # zakres folderu: tylko wyklady z folderu
+    fid = c.post("/api/folders", json={"name": "Semestr", "parent": None}, headers={"X-LectureNoter": "1"}).json()["id"]
+    c.patch("/api/videos/ok", json={"folder": fid}, headers={"X-LectureNoter": "1"})
+    cid2 = c.post("/api/videos/_all/chats", json={"scope": fid}).json()["id"]
+    ev2 = parse_sse(c.post(f"/api/videos/_all/chats/{cid2}/messages", json={"content": "Co to maszyna Turinga?"}).text)
+    labels = [s["video_id"] for s in next(d for e, d in ev2 if e == "sources")]
+    assert labels and set(labels) == {"ok"}
+    assert c.delete(f"/api/videos/_all/chats/{cid}").json() == {"ok": True}
+
+
+def test_global_chat_without_notes_reports_error(env):
+    from test_ui import FakeOllama, parse_sse
+    lib, gpu, jm, videos, work = env
+    app = create_app(CFG, videos, work, jobs=jm, start_jobs=False, extra_hosts=("testserver",), ollama=FakeOllama())
+    c = TestClient(app)
+    cid = c.post("/api/videos/_all/chats", json={}).json()["id"]
+    ev = parse_sse(c.post(f"/api/videos/_all/chats/{cid}/messages", json={"content": "Cokolwiek?"}).text)
+    assert ev[-1][0] == "error" and "Brak notatek" in ev[-1][1]
