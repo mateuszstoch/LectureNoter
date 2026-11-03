@@ -295,7 +295,7 @@ function mountDetail(id, tab) {
   const view = $("#view");
   const tabBtn = (key, label) => h("a", { class: "tab", role: "tab", href: `#/video/${id}${key === "process" ? "" : "/" + key}`, "aria-selected": String(tab === key) }, label);
   const tabs = h("div", { class: "tabs", role: "tablist" }, tabBtn("process", "Przetwarzanie"), tabBtn("notes", "Notatki"),
-    tabBtn("materials", "Materiały"), tabBtn("chat", "Czat"), tabBtn("glossary", "Słownik"), tabBtn("quiz", "Quiz"));
+    tabBtn("materials", "Materiały"), tabBtn("chat", "Czat"), tabBtn("glossary", "Słownik"), tabBtn("quiz", "Quiz"), tabBtn("flashcards", "Fiszki"));
   const content = h("div", { id: "dtab" });
   view.replaceChildren(h("div", { id: "dhead" }), tabs, content);
   if (tab === "process") {
@@ -313,6 +313,8 @@ function mountDetail(id, tab) {
     mountGlossaryTab(content, id);
   } else if (tab === "quiz") {
     mountQuizTab(content, id);
+  } else if (tab === "flashcards") {
+    mountFlashcardsTab(content, id);
   }
   updateDetail();
 }
@@ -525,12 +527,18 @@ function route() {
     return;
   }
   lastHash = location.hash || "#/";
+  if (location.hash === "#/progress") {
+    detailId = null; stopLogs();
+    $("#view").classList.remove("wide");
+    mountProgressView();
+    return;
+  }
   if (location.hash === "#/logs") {
     detailId = null; activeTab = null; stopLogs();
     renderServerLogs();
     return;
   }
-  const m = location.hash.match(/^#\/video\/([a-z0-9_-]+)(?:\/(notes|materials|chat|quiz|glossary))?/);
+  const m = location.hash.match(/^#\/video\/([a-z0-9_-]+)(?:\/(notes|materials|chat|quiz|glossary|flashcards))?/);
   $("#view").classList.toggle("wide", !!m); // szerszy obszar w widoku wykładu
   if (m) {
     const tab = m[2] || "process";
@@ -548,7 +556,7 @@ function rerender() {
   if (state.stopped) return;
   renderSys();
   updateBanner();
-  if (location.hash === "#/logs") return;
+  if (location.hash === "#/logs" || location.hash === "#/progress") return;
   if (detailId && location.hash.startsWith("#/video/")) updateDetail();
   else renderLibrary();
 }

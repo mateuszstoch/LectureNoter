@@ -52,3 +52,153 @@ function mountGlossaryTab(container, videoId) {
   render();
   activeTab = { onState() {}, dirty: () => false };
 }
+
+// ---------- fiszki ----------
+async function addFlashcard(videoId, front, back, source) {
+  try {
+    const r = await api(`/api/videos/${videoId}/flashcards`, { method: "POST", body: { front, back, source } });
+    toast(r.added ? "Dodano fiszkę." : "Taka fiszka już istnieje.");
+  } catch (e) { toast(e.message); }
+}
+
+function fmtDue(ts) {
+  const d = ts - Date.now() / 1000;
+  if (d <= 0) return "do powtórki teraz";
+  if (d < 3600) return `za ${Math.max(1, Math.round(d / 60))} min`;
+  if (d < 86400) return `za ${Math.round(d / 3600)} godz.`;
+  return `za ${Math.round(d / 86400)} dni`;
+}
+
+function mountFlashcardsTab(container, videoId) {
+  const root = h("div", {});
+  container.replaceChildren(root);
+  const base = `/api/videos/${videoId}/flashcards`;
+  let data = { cards: [], total: 0, due: 0 }, session = null; // session: { queue, idx, shown, done }
+
+  async function call(path, opts) {
+    try { const r = await api(path, opts); if (r.cards) data = r; return r; } catch (e) { toast(e.message); return null; }
+  }
+  async function load() { await call(base); session ? renderSession() : render(); }
+
+  async function bulk(path, label) {
+    const r = await call(`${base}/${path}`, { method: "POST", body: {} });
+    if (r) { toast(r.added ? `${label}: dodano ${r.added}.` : `${label}: nic nowego do dodania.`); render(); }
+  }
+
+  function startSession() {
+    const now = Date.now() / 1000;
+    session = { queue: data.cards.filter((c) => c.due <= now), idx: 0, shown: false, done: 0 };
+    renderSession();
+  }
+
+  function nextHint(c, g) { // przybliżony odstęp po ocenie (tak jak w serwerze)
+    if (g === 0) return "10 min";
+    const e = c.ease || 2.5, i = c.interval || 0, r = c.reps || 0;
+    const days = g === 1 ? Math.max(1, i * 1.2) : g === 2 ? (r === 0 ? 1 : r === 1 ? 3 : i * e) : (r === 0 ? 4 : Math.max(5, i * e * 1.3));
+    return days < 1.5 ? "1 dzień" : `${Math.round(days)} dni`;
+  }
+
+  function renderSession() {
+    const c = session.queue[session.idx];
+    if (!c) {
+      root.replaceChildren(h("div", { class: "card quiz-result" }, h("div", { class: "quiz-score" }, `${session.done}`), h("div", { class: "muted" }, "fiszek powtórzonych w tej sesji"),
+        h("div", { class: "row", style: "justify-content:center;margin-top:12px" }, h("button", { class: "primary", onclick: () => { session = null; load(); } }, "Wróć do fiszek"))));
+      return;
+    }
+    const grade = async (g) => {
+      const r = await call(`${base}/${c.id}/review`, { method: "POST", body: { grade: g } });
+      if (!r) return;
+      session.done++;
+      if (g === 0) session.queue.push(r.card);   // nie pamiętam: karta wróci jeszcze w tej sesji
+      session.idx++; session.shown = false;
+      renderSession();
+    };
+    root.replaceChildren(
+      h("div", { class: "row spread" }, h("a", { href: "#", onclick: (e) => { e.preventDefault(); session = null; load(); } }, "← Zakończ sesję"),
+        h("span", { class: "muted small" }, `Fiszka ${session.idx + 1} z ${session.queue.length}`)),
+      h("div", { class: "card qcard", style: "margin-top:12px" },
+        c.source ? h("div", { class: "muted small", style: "margin-bottom:6px" }, c.source) : null,
+        h("div", { class: "qtext", style: "white-space:pre-wrap" }, c.front),
+        session.shown ? h("div", { class: "qfeedback" }, h("div", { class: "qyours", style: "white-space:pre-wrap" }, c.back),
+          h("div", { class: "row", style: "gap:8px;margin-top:8px;flex-wrap:wrap" },
+            [[0, "Nie pamiętam"], [1, "Trudne"], [2, "Dobrze"], [3, "Łatwo"]].map(([g, l]) =>
+              h("button", { class: g === 2 ? "primary" : "", onclick: () => grade(g) }, `${l} · ${nextHint(c, g)}`))))
+          : h("div", { style: "margin-top:12px" }, h("button", { class: "primary", onclick: () => { session.shown = true; renderSession(); } }, "Pokaż odpowiedź"))));
+  }
+
+  function render() {
+    const front = h("input", { type: "text", placeholder: "Awers (pytanie / pojęcie)", style: "width:100%", "aria-label": "Awers" });
+    const back = h("textarea", { rows: "2", placeholder: "Rewers (odpowiedź)", style: "width:100%", "aria-label": "Rewers" });
+    root.replaceChildren(
+      h("div", { class: "row spread", style: "margin-bottom:12px;flex-wrap:wrap" },
+        h("div", {}, h("span", { class: "quiz-score", style: "font-size:30px" }, `${data.due}`), h("span", { class: "muted" }, ` do powtórki · ${data.total} fiszek`)),
+        h("div", { class: "row", style: "flex-wrap:wrap" },
+          h("button", { class: "primary", disabled: !data.due, onclick: startSession }, data.due ? `Ucz się (${data.due})` : "Brak fiszek do powtórki"),
+          h("button", { class: "small", onclick: () => bulk("from-glossary", "Ze słownika") }, "Dodaj ze słownika"),
+          h("button", { class: "small", onclick: () => bulk("from-quizzes", "Z quizów") }, "Dodaj błędne z quizów"),
+          h("a", { class: `btn small${data.total ? "" : " disabled"}`, href: data.total ? `${base}/export` : "#", download: `${videoId}-fiszki-anki.txt`,
+            title: "Plik do importu w Anki (Plik → Importuj)" }, "Eksport do Anki"))),
+      h("details", { class: "card", style: "margin-bottom:12px" }, h("summary", { class: "small" }, "Dodaj własną fiszkę"),
+        h("div", { style: "display:grid;gap:8px;margin-top:8px" }, front, back,
+          h("div", {}, h("button", { class: "small", onclick: async () => {
+            if (!front.value.trim() || !back.value.trim()) { toast("Wpisz awers i rewers."); return; }
+            const r = await call(base, { method: "POST", body: { front: front.value, back: back.value, source: "ręczna" } });
+            if (r) { toast(r.added ? "Dodano fiszkę." : "Taka fiszka już istnieje."); render(); }
+          } }, "Dodaj")))),
+      data.cards.length ? h("div", { class: "gloss-list" }, data.cards.map((c) => h("div", { class: "card gloss-item" },
+        h("div", { class: "gloss-term", style: "font-size:16px;white-space:pre-wrap" }, c.front), h("div", { class: "gloss-def", style: "white-space:pre-wrap" }, c.back),
+        h("div", { class: "row spread", style: "margin-top:8px" }, h("span", { class: "muted small" }, `${c.source || ""} · ${fmtDue(c.due)}`),
+          h("button", { class: "small danger", onclick: async () => { if (await confirmDialog({ title: "Usuń fiszkę", text: "Fiszka zostanie usunięta.", confirmLabel: "Usuń", danger: true })) { await call(`${base}/${c.id}`, { method: "DELETE" }); render(); } } }, "Usuń")))))
+        : h("div", { class: "empty" }, "Brak fiszek. Dodaj je ze słownika wykładu lub z błędnych odpowiedzi w quizach."));
+  }
+
+  render();
+  load();
+  activeTab = { onState() {}, dirty: () => false };
+}
+
+// ---------- przegląd postępów ----------
+function folderPathName(id) {
+  const parts = [];
+  for (let f = state.folders.find((x) => x.id === id), n = 0; f && n < 6; f = state.folders.find((x) => x.id === f.parent), n++) parts.unshift(f.name);
+  return parts.join(" / ");
+}
+
+async function mountProgressView() {
+  const view = $("#view");
+  activeTab = null;
+  view.replaceChildren(h("div", { class: "muted" }, "Ładowanie…"));
+  let rows;
+  try { rows = await api("/api/progress"); } catch (e) { view.textContent = e.message; return; }
+  let folder = "", sort = "attention";
+  const desc = (id) => { const ids = new Set([id]); let grew = true; while (grew) { grew = false; state.folders.forEach((f) => { if (ids.has(f.parent) && !ids.has(f.id)) { ids.add(f.id); grew = true; } }); } return ids; };
+  const body = h("div", {});
+  function paint() {
+    const ids = folder ? desc(folder) : null;
+    let shown = rows.filter((r) => !ids || ids.has(r.folder));
+    const att = (r) => (r.cards_due ? 2 : 0) + (r.weak.length ? 2 : 0) + (r.quizzes && !r.passed ? 1 : 0) + (!r.quizzes ? 1 : 0);
+    shown = shown.slice().sort(sort === "title" ? (a, b) => (a.title || "").localeCompare(b.title || "", "pl") : (a, b) => att(b) - att(a));
+    const withQuiz = shown.filter((r) => r.quizzes), passed = shown.filter((r) => r.passed);
+    body.replaceChildren(...kids(
+      h("div", { class: "row", style: "gap:28px;margin:6px 0 16px;flex-wrap:wrap" },
+        [[`${passed.length}/${shown.length}`, "wykładów z zaliczonym quizem"], [`${withQuiz.length}`, "z jakimkolwiek quizem"], [`${shown.reduce((s, r) => s + r.cards_due, 0)}`, "fiszek do powtórki"],
+          [`${shown.reduce((s, r) => s + r.attempts, 0)}`, "podejść do quizów"]].map(([n, l]) => h("div", {}, h("div", { class: "quiz-score", style: "font-size:30px" }, n), h("div", { class: "muted small" }, l)))),
+      shown.length ? shown.map((r) => h("div", { class: "card", style: "margin-bottom:10px" },
+        h("div", { class: "row spread" },
+          h("div", { style: "min-width:0" }, h("a", { class: "vtitle", href: `#/video/${r.id}/quiz` }, r.title || r.id),
+            h("div", { class: "muted small" }, [r.folder ? folderPathName(r.folder) : "bez folderu", r.quizzes ? `quizy: ${r.quizzes}` : "brak quizów", r.attempts ? `podejścia: ${r.attempts}` : null,
+              r.last_attempt ? `ostatnio ${fmtDate(r.last_attempt)}` : null].filter(Boolean).join("  ·  "))),
+          h("div", { class: "row" }, r.best != null ? h("span", { class: `chip ${r.passed ? "ok" : "stale"}` }, `${Math.round(r.best)}% · ${r.passed ? "zaliczony" : "niezaliczony"}`) : h("span", { class: "chip" }, "bez quizu"))),
+        r.weak.length ? h("div", { class: "small", style: "margin-top:6px" }, h("span", { class: "muted" }, "Do powtórki: "), r.weak.join("; ")) : null,
+        h("div", { class: "row", style: "margin-top:8px" },
+          h("a", { class: "btn small", href: `#/video/${r.id}/quiz` }, r.quizzes ? "Quizy" : "Zrób quiz"),
+          h("a", { class: "btn small", href: `#/video/${r.id}/flashcards` }, r.cards_due ? `Fiszki (${r.cards_due} do powtórki)` : `Fiszki (${r.cards})`),
+          h("a", { class: "btn small", href: `#/video/${r.id}/notes` }, "Notatki")))) : h("div", { class: "empty" }, "Brak wykładów w tym folderze.")));
+  }
+  const fsel = h("select", { "aria-label": "Folder", onchange: (e) => { folder = e.target.value; paint(); } }, h("option", { value: "" }, "Wszystkie wykłady"),
+    state.folders.map((f) => h("option", { value: f.id }, folderPathName(f.id))));
+  const ssel = h("select", { "aria-label": "Sortowanie", onchange: (e) => { sort = e.target.value; paint(); } },
+    h("option", { value: "attention" }, "Wymagające uwagi najpierw"), h("option", { value: "title" }, "Tytuł"));
+  view.replaceChildren(h("div", { class: "row spread", style: "flex-wrap:wrap" }, h("h1", {}, "Postępy w nauce"), h("div", { class: "row" }, fsel, ssel)), body);
+  paint();
+}

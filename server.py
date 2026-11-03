@@ -36,7 +36,8 @@ from ui import materials, notes as notes_mod
 from ui.chat import ChatBusy, ChatError, ChatService, ChatStore, export_markdown
 import suggestions as sugg
 from ui import explain as explain_mod, glossary as gloss_mod, verify as verify_mod
-from ui.quiz import QuizError, QuizService
+from ui import flashcards as fc_mod, progress as progress_mod
+from ui.quiz import QuizError, QuizService, QuizStore
 from starlette.background import BackgroundTask
 
 from ui import archive as archive_mod
@@ -126,6 +127,16 @@ class QuizCreate(BaseModel):
     title: str | None = None
     types: list[str] | None = None
     adaptive: bool = False
+
+
+class CardCreate(BaseModel):
+    front: str
+    back: str
+    source: str = "ręczna"
+
+
+class CardReview(BaseModel):
+    grade: int
 
 
 class ExplainRequest(BaseModel):
@@ -730,6 +741,63 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
             gloss_mod.save(wd, terms, model)
         with_model(vid, run)
         return gloss_mod.load(wd)
+
+    # --- fiszki ---
+    def card_guard(fn):
+        try:
+            return fn()
+        except fc_mod.CardError as e:
+            raise HTTPException(404 if "nie ma takiej" in str(e) else 400, str(e))
+
+    def cards_payload(vid):
+        cards = fc_mod.FlashStore(wd_of(vid)).all()
+        now = time.time()
+        return {"cards": sorted(cards, key=lambda c: c.get("due", 0)), "total": len(cards), "due": sum(1 for c in cards if fc_mod.is_due(c, now))}
+
+    @app.get("/api/videos/{vid}/flashcards")
+    def cards_list(vid: str):
+        return cards_payload(vid)
+
+    @app.post("/api/videos/{vid}/flashcards")
+    def cards_add(vid: str, req: CardCreate):
+        n = fc_mod.FlashStore(wd_of(vid)).add_many([{"front": req.front, "back": req.back, "source": req.source}])
+        return {"added": n, **cards_payload(vid)}
+
+    @app.post("/api/videos/{vid}/flashcards/from-glossary")
+    def cards_from_glossary(vid: str):
+        terms = gloss_mod.load(wd_of(vid))["terms"]
+        n = fc_mod.FlashStore(wd_of(vid)).add_many([{"front": t["term"], "back": t["definition"], "source": "słownik"} for t in terms])
+        return {"added": n, **cards_payload(vid)}
+
+    @app.post("/api/videos/{vid}/flashcards/from-quizzes")
+    def cards_from_quizzes(vid: str):
+        wd = wd_of(vid)
+        n = fc_mod.FlashStore(wd).add_many(fc_mod.cards_from_quizzes(QuizStore(wd).all()))
+        return {"added": n, **cards_payload(vid)}
+
+    @app.get("/api/videos/{vid}/flashcards/export")
+    def cards_export(vid: str):
+        cards = fc_mod.FlashStore(wd_of(vid)).all()
+        return Response(fc_mod.export_anki(cards), media_type="text/tab-separated-values; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="{vid}-fiszki-anki.txt"'})
+
+    @app.post("/api/videos/{vid}/flashcards/{cid}/review")
+    def cards_review(vid: str, cid: str, req: CardReview):
+        card = card_guard(lambda: fc_mod.FlashStore(wd_of(vid)).review(cid, req.grade))
+        return {"card": card, **cards_payload(vid)}
+
+    @app.delete("/api/videos/{vid}/flashcards/{cid}")
+    def cards_delete(vid: str, cid: str):
+        card_guard(lambda: fc_mod.FlashStore(wd_of(vid)).delete(cid))
+        return cards_payload(vid)
+
+    @app.get("/api/progress")
+    def progress():
+        out = []
+        for v in lib.list_videos():
+            out.append({"id": v["id"], "title": v["title"], "folder": v.get("folder"), "overall": v["overall"],
+                        **progress_mod.lecture_progress(lib.workdir(v["id"]), quizzes.pass_ratio)})
+        return out
 
     # --- quizy ---
     def quiz_guard(fn):

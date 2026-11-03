@@ -243,7 +243,20 @@ function mountQuizTab(container, videoId) {
       parts.push(h("div", { class: "qans" }, h("div", { class: "muted small" }, "Wzorcowa odpowiedź:"), md("qmodel", q.model_answer),
         q.key_points && q.key_points.length ? h("ul", { class: "small" }, q.key_points.map((k) => h("li", {}, k))) : null));
     }
+    if (res.score < 1 && typeof addFlashcard === "function") {
+      const [f, b] = cardFor(q);
+      parts.push(h("div", {}, h("button", { class: "small", onclick: () => addFlashcard(videoId, f, b, "quiz") }, "+ Dodaj do fiszek")));
+    }
     return h("div", { class: "qfeedback" }, parts);
+  }
+
+  function cardFor(q) {
+    if (q.type === "single" || q.type === "multi") {
+      const ok = q.options.filter((o) => o.correct);
+      return [q.question, `Poprawne: ${ok.map((o) => o.text).join("; ")}${ok.map((o) => o.why).filter(Boolean).length ? "\n" + ok.map((o) => o.why).filter(Boolean).join("\n") : ""}`];
+    }
+    if (q.type === "term") return [`Jak nazywa się pojęcie: ${q.question}`, `${q.term}${q.explanation ? "\n" + q.explanation : ""}`];
+    return [q.question, `${q.model_answer}${q.key_points && q.key_points.length ? "\n• " + q.key_points.join("\n• ") : ""}`];
   }
 
   function renderRun() {
