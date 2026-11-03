@@ -95,58 +95,129 @@ def extract_json(text):
     return None
 
 
-def _questions_of(data):
+def _salvage_objects(text):
+    """Odzyskuje kompletne obiekty z uciętego JSON-a (model skonczyl na limicie tokenow w srodku listy)."""
+    dec, out, i = json.JSONDecoder(), [], text.find("[")
+    while 0 <= i < len(text):
+        i = text.find("{", i)
+        if i < 0:
+            break
+        try:
+            obj, end = dec.raw_decode(text, i)
+        except ValueError:
+            break
+        out.append(obj)
+        i = end
+    return [o for o in out if isinstance(o, dict)]
+
+
+QUESTION_KEYS = ("questions", "pytania", "items", "quiz", "data")
+
+
+def questions_of(raw):
+    """Lista pytan z odpowiedzi modelu: toleruje inne nazwy klucza, pojedyncze pytanie zamiast listy i ucieta odpowiedz."""
+    data = extract_json(raw)
     if isinstance(data, dict):
-        data = data.get("questions", data.get("pytania"))
-    return [q for q in data if isinstance(q, dict)] if isinstance(data, list) else []
+        for k in QUESTION_KEYS:
+            if isinstance(data.get(k), list):
+                return [q for q in data[k] if isinstance(q, dict)]
+        if any(k in data for k in ("question", "pytanie", "definition", "definicja")):
+            return [data]  # model zwrocil jedno pytanie bez listy
+        return []
+    if isinstance(data, list):
+        return [q for q in data if isinstance(q, dict)]
+    return _salvage_objects(raw or "")
 
 
 def _text(v, limit=1200):
     return v.strip()[:limit] if isinstance(v, str) else ""
 
 
-def normalize_question(raw, qtype, rng=random):
-    """Zwraca poprawne pytanie w naszym formacie albo None (zle sformatowane / nie spelnia zasad typu)."""
-    why_common = _text(raw.get("section"), 160)
-    if qtype in ("single", "multi"):
-        q = _text(raw.get("question"))
-        opts, seen = [], set()
-        for o in raw.get("options") or []:
-            if not isinstance(o, dict):
-                return None
-            t = _strip_label(_text(o.get("text"), 400))
-            if not t or _norm(t) in seen:
-                return None
-            seen.add(_norm(t))
-            corr = o.get("correct")
-            corr = corr if isinstance(corr, bool) else str(corr).lower() in ("true", "tak", "1")
-            opts.append({"text": t, "correct": corr, "why": _text(o.get("why"), 500)})
-        n_ok = sum(o["correct"] for o in opts)
-        if not q or not 3 <= len(opts) <= 6:
-            return None
-        if qtype == "single" and n_ok != 1:
-            return None
-        if qtype == "multi" and not 2 <= n_ok < len(opts):
-            return None
-        rng.shuffle(opts)  # modele lubia stawiac poprawna odpowiedz pierwsza
-        return {"type": qtype, "question": q, "options": opts, "section": why_common}
-    if qtype == "term":
-        d, term = _text(raw.get("definition")), _text(raw.get("term"), 120)
-        if not d or not term:
-            return None
-        aliases = [a.strip() for a in (raw.get("aliases") or []) if isinstance(a, str) and a.strip()][:6]
-        nd = _norm(d)
-        if _norm(term) and _norm(term) in nd:  # opis zdradza odpowiedz
-            return None
-        return {"type": "term", "question": d, "term": term, "aliases": aliases, "explanation": _text(raw.get("explanation"), 500),
-                "section": why_common}
-    if qtype == "open":
-        q, ans = _text(raw.get("question")), _text(raw.get("model_answer"), 2000)
-        pts = [p.strip() for p in (raw.get("key_points") or []) if isinstance(p, str) and p.strip()][:6]
-        if not q or not ans:
-            return None
-        return {"type": "open", "question": q, "model_answer": ans, "key_points": pts, "section": why_common}
+def _pick(raw, *keys):
+    for k in keys:
+        if raw.get(k) not in (None, "", []):
+            return raw[k]
     return None
+
+
+def _truthy(v):
+    return v if isinstance(v, bool) else str(v).strip().lower() in ("true", "tak", "1", "yes", "poprawna", "prawda")
+
+
+def _options(raw):
+    """Opcje w roznych ksztaltach: lista obiektow {text, correct, why}, lista napisow + osobno wskazanie poprawnych."""
+    items = _pick(raw, "options", "opcje", "answers", "odpowiedzi", "choices")
+    if isinstance(items, dict):  # {"A": "...", "B": "..."}
+        items = [{"text": v} for v in items.values()]
+    if not isinstance(items, list):
+        raise ValueError("brak listy opcji")
+    marked = _pick(raw, "correct_answers", "correct_answer", "correct", "poprawne", "poprawna", "answer", "odpowiedz", "poprawna_odpowiedz")
+    marked = marked if isinstance(marked, list) else ([marked] if marked is not None else [])
+    opts = []
+    for i, o in enumerate(items):
+        if isinstance(o, str):
+            o = {"text": o}
+        if not isinstance(o, dict):
+            raise ValueError("opcja nie jest tekstem")
+        t = _strip_label(_text(_pick(o, "text", "tekst", "option", "opcja", "answer", "odpowiedz", "content"), 400))
+        if not t:
+            raise ValueError("pusta opcja")
+        own = _pick(o, "correct", "is_correct", "poprawna", "poprawny")
+        ok = _truthy(own) if own is not None else None
+        if ok is None:  # poprawnosc podana osobno: litera, numer (od 1) albo tresc opcji
+            ok = any(str(m).strip().rstrip(").:").upper() == "ABCDEF"[i] or str(m).strip() == str(i + 1) or _norm(str(m)) == _norm(t)
+                     for m in marked if str(m).strip())
+        opts.append({"text": t, "correct": bool(ok), "why": _text(_pick(o, "why", "dlaczego", "explanation", "wyjasnienie", "uzasadnienie"), 500)})
+    return opts
+
+
+def _normalize(raw, qtype, rng=random):
+    """Zwraca pytanie w naszym formacie; rzuca ValueError(powod), gdy nie spelnia zasad typu."""
+    section = _text(_pick(raw, "section", "sekcja"), 160)
+    if qtype in ("single", "multi"):
+        q = _text(_pick(raw, "question", "pytanie", "q"))
+        if not q:
+            raise ValueError("brak tresci pytania")
+        opts = _options(raw)
+        if len({_norm(o["text"]) for o in opts}) != len(opts):
+            raise ValueError("powtorzone opcje")
+        n_ok = sum(o["correct"] for o in opts)
+        if not 3 <= len(opts) <= 6:
+            raise ValueError(f"{len(opts)} opcji zamiast 3-6")
+        if qtype == "single" and n_ok != 1:
+            raise ValueError(f"{n_ok} poprawnych opcji w pytaniu jednokrotnego wyboru")
+        if qtype == "multi" and not 1 <= n_ok < len(opts):
+            raise ValueError("nieprawidlowa liczba poprawnych opcji w pytaniu wielokrotnego wyboru")
+        rng.shuffle(opts)  # modele lubia stawiac poprawna odpowiedz pierwsza
+        return {"type": qtype, "question": q, "options": opts, "section": section}
+    if qtype == "term":
+        d = _text(_pick(raw, "definition", "definicja", "question", "pytanie", "opis"))
+        term = _text(_pick(raw, "term", "termin", "pojecie", "pojęcie", "nazwa", "answer", "odpowiedz"), 120)
+        if not d or not term:
+            raise ValueError("brak definicji lub nazwy")
+        raw_al = _pick(raw, "aliases", "synonimy") or []
+        aliases = [a.strip() for a in (raw_al if isinstance(raw_al, list) else [raw_al]) if isinstance(a, str) and a.strip()][:6]
+        if _norm(term) and _norm(term) in _norm(d):  # opis zdradza odpowiedz
+            raise ValueError("opis zawiera nazwe pojecia")
+        return {"type": "term", "question": d, "term": term, "aliases": aliases,
+                "explanation": _text(_pick(raw, "explanation", "wyjasnienie", "uzasadnienie"), 500), "section": section}
+    if qtype == "open":
+        q = _text(_pick(raw, "question", "pytanie", "q"))
+        ans = _pick(raw, "model_answer", "wzorcowa_odpowiedz", "answer", "odpowiedz", "odpowiedz_wzorcowa")
+        ans = _text(ans if isinstance(ans, str) else "", 2000)
+        raw_pts = _pick(raw, "key_points", "kluczowe_elementy", "punkty") or []
+        pts = [p.strip() for p in (raw_pts if isinstance(raw_pts, list) else [raw_pts]) if isinstance(p, str) and p.strip()][:6]
+        if not q or not ans:
+            raise ValueError("brak pytania lub wzorcowej odpowiedzi")
+        return {"type": "open", "question": q, "model_answer": ans, "key_points": pts, "section": section}
+    raise ValueError("nieznany typ")
+
+
+def normalize_question(raw, qtype, rng=random):
+    try:
+        return _normalize(raw, qtype, rng)
+    except ValueError:
+        return None
 
 
 def too_similar(question, existing):
@@ -440,7 +511,7 @@ class QuizService:
         if not groups:
             raise QuizError("Wybrany obszar nie zawiera materiału, z którego można ułożyć pytania.")
         plan = self._split_counts(count, groups)
-        questions, stems = [], []
+        questions, stems, rejected = [], [], {}
         opts = {"num_ctx": num_ctx, "num_predict": predict, "temperature": float(self.qcfg.get("temperature", 0.5))}
         with self._wait_session(video_id, model, lambda: st.exists(qid)):
             for material, want in plan:
@@ -453,11 +524,21 @@ class QuizService:
                     n = min(n, BATCH)
                     prompt = self._prompt(qtype, n, material, stems)
                     raw = self.client.generate(model, prompt, system=SYSTEM, options=opts, keep_alive="10m", format="json")
-                    for r in _questions_of(extract_json(raw)):
+                    found = questions_of(raw)
+                    if not found:
+                        rejected["nieczytelna odpowiedz modelu"] = rejected.get("nieczytelna odpowiedz modelu", 0) + 1
+                        logger.warning(f"quiz {video_id}/{qid}: nie rozpoznano pytan w odpowiedzi modelu: {(raw or '')[:400]!r}")
+                    for r in found:
                         if got >= want:
                             break
-                        q = normalize_question(r, qtype)
-                        if not q or too_similar(q["question"], stems):
+                        try:
+                            q = _normalize(r, qtype)
+                        except ValueError as e:
+                            rejected[str(e)] = rejected.get(str(e), 0) + 1
+                            logger.info(f"quiz {video_id}/{qid}: odrzucono pytanie ({e}): {json.dumps(r, ensure_ascii=False)[:300]}")
+                            continue
+                        if too_similar(q["question"], stems):
+                            rejected["powtorzone pytanie"] = rejected.get("powtorzone pytanie", 0) + 1
                             continue
                         q["id"] = uuid.uuid4().hex[:6]
                         questions.append(q)
@@ -465,9 +546,11 @@ class QuizService:
                         got += 1
                     done = len(questions)
                     st.update(qid, lambda x, d=done: x.update(progress={"done": d, "total": count}, questions=list(questions)))
+        why = "; ".join(f"{r} (×{n})" for r, n in sorted(rejected.items(), key=lambda x: -x[1])[:3])
         if not questions:
-            raise QuizError("Model nie zwrócił poprawnych pytań. Spróbuj ponownie lub wybierz inny model.")
-        warn = f"Udało się ułożyć {len(questions)} z {count} pytań." if len(questions) < count else None
+            raise QuizError("Model nie zwrócił poprawnych pytań" + (f" (odrzucone: {why})" if why else "")
+                            + ". Spróbuj ponownie lub wybierz inny, większy model.")
+        warn = (f"Udało się ułożyć {len(questions)} z {count} pytań" + (f" (odrzucone: {why})" if why else "") + ".") if len(questions) < count else None
         st.update(qid, lambda x: x.update(status="ready", questions=questions, warning=warn, error=None,
                                           progress={"done": len(questions), "total": count}))
         logger.info(f"quiz {video_id}/{qid}: {len(questions)}/{count} pytan ({qtype})")

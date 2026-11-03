@@ -101,7 +101,11 @@ def test_normalize_choice_rules():
     assert q and sum(o["correct"] for o in q["options"]) == 1 and len(q["options"]) == 4
     two = mk_choice(0, True)
     assert qz.normalize_question(two, "single") is None          # dwie poprawne w jednokrotnym
-    assert qz.normalize_question(good, "multi") is None           # jedna poprawna w wielokrotnym
+    assert qz.normalize_question(good, "multi") is not None       # jedna poprawna w wielokrotnym jest dopuszczalna
+    allok = mk_choice(0, True)
+    for o in allok["options"]:
+        o["correct"] = True
+    assert qz.normalize_question(allok, "multi") is None          # wszystkie poprawne: nie ma czego wybierac
     assert qz.normalize_question(two, "multi") is not None
     dup = mk_choice(0)
     dup["options"][1]["text"] = dup["options"][0]["text"]
@@ -285,3 +289,41 @@ def test_delete_while_waiting_cancels_generation(qc):
     while app.state.quizzes.is_generating("ok") and time.time() - t < 10:
         time.sleep(0.05)
     assert not app.state.quizzes.is_generating("ok") and c.get("/api/videos/ok/quizzes").json()[0]["id"] == a
+
+
+# ---------- odpornosc na rozne ksztalty odpowiedzi modelu ----------
+def test_questions_of_shapes():
+    one = {"question": "Q?", "model_answer": "A"}
+    assert qz.questions_of(json.dumps({"pytania": [one]})) == [one]
+    assert qz.questions_of(json.dumps(one)) == [one]            # pojedyncze pytanie bez listy
+    assert qz.questions_of(json.dumps([one, one])) == [one, one]
+    cut = '{"questions": [{"question": "A?", "model_answer": "x"}, {"question": "B?", "model_answer": "y"}, {"question": "C?", "mod'
+    assert [q["question"] for q in qz.questions_of(cut)] == ["A?", "B?"]    # ucieta odpowiedz: kompletne pytania zostaja
+    assert qz.questions_of("nic") == []
+
+
+def test_choice_alternative_shapes():
+    letters = {"pytanie": "Co to jest?", "opcje": ["A) pierwsza", "B) druga", "C) trzecia", "D) czwarta"], "poprawna_odpowiedz": "B"}
+    q = qz.normalize_question(letters, "single")
+    assert q and [o["text"] for o in q["options"] if o["correct"]] == ["druga"]
+    idx = {"question": "Co?", "options": ["x1", "x2", "x3", "x4"], "correct_answers": [1, 3]}
+    assert qz.normalize_question(idx, "multi") is not None
+    text = {"question": "Co?", "options": [{"text": "aa"}, {"text": "bb"}, {"text": "cc"}], "correct_answer": "cc"}
+    q = qz.normalize_question(text, "single")
+    assert [o["text"] for o in q["options"] if o["correct"]] == ["cc"]
+    strs = {"question": "Co?", "options": [{"text": "aa", "correct": "true"}, {"text": "bb", "correct": "false"}, {"text": "cc", "correct": False}]}
+    assert qz.normalize_question(strs, "single") is not None
+
+
+def test_rejection_reasons_reach_error_message(qc):
+    c, fake, app = qc
+    orig = fake.generate
+
+    def bad(model, prompt, **kw):
+        if "Oceń" in prompt:
+            return orig(model, prompt, **kw)
+        return json.dumps({"questions": [{"question": "Co?", "options": [{"text": "a", "correct": True}, {"text": "b", "correct": True},
+                                                                     {"text": "c", "correct": False}, {"text": "d", "correct": False}]}]})
+    fake.generate = bad
+    q = make(c, type="single", count=2)
+    assert q["status"] == "error" and "poprawnych opcji" in q["error"]

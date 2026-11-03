@@ -84,8 +84,10 @@ function mountQuizTab(container, videoId) {
       text: `„${q.title}” zostanie trwale usunięty razem z historią podejść.`, confirmLabel: "Usuń", danger: true });
     if (!ok) return;
     try { await api(`${base}/${q.id}`, { method: "DELETE" }); } catch (e) { toast(e.message); }
-    if (view.quiz && view.quiz.id === q.id) view = { name: "list" };
+    list = list.filter((x) => x.id !== q.id); // znika od razu, bez przeładowania strony
+    if (view.name !== "list") view = { name: "list" };
     render();
+    loadList();
   }
 
   // ---------- nowy quiz ----------
