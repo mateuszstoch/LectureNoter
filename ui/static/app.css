@@ -391,3 +391,18 @@ pre.vlm { white-space: pre-wrap; background: var(--sunk); padding: 8px 12px; fon
 .sugg-kw { gap: 6px; margin: 8px 0 4px; flex-wrap: wrap; }
 .sugg-q { display: grid; gap: 6px; margin-top: 8px; }
 .sugg-q button { text-align: left; }
+
+/* ---------- klatki w notatkach, zaznaczenie, kontrola wierności ---------- */
+.nframes { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0 14px; }
+.nframe { display: grid; gap: 3px; padding: 4px; border: 1px solid var(--rule); background: var(--paper); border-radius: 2px; text-align: left; }
+.nframe:hover { border-color: var(--ink); background: var(--paper); color: inherit; }
+.nframe img { width: 190px; max-width: 42vw; height: auto; display: block; background: #fff; }
+.selbar { position: fixed; z-index: 30; display: flex; gap: 6px; padding: 6px; background: var(--ink); border-radius: 3px; box-shadow: 0 4px 14px rgba(0,0,0,.25); }
+.selbar button { background: var(--paper); color: var(--ink); border-color: var(--paper); }
+.nverify-weak { border-left: 3px dotted var(--warn); padding-left: 10px; background: color-mix(in srgb, var(--warn) 8%, transparent); }
+.nverify-uncertain { border-left: 3px solid var(--accent); padding-left: 10px; background: color-mix(in srgb, var(--accent) 7%, transparent); }
+@media print { .nframes, .selbar { display: none !important; } }
+.gloss-list { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+.gloss-item { margin: 0; }
+.gloss-term { font: 600 18px var(--serif); }
+.gloss-def { margin-top: 4px; color: var(--ink-2); line-height: 1.5; }

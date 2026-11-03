@@ -115,10 +115,13 @@ function mountQuizTab(container, videoId) {
         h("span", {}, h("strong", {}, t.label), h("span", { class: "muted small", style: "display:block" }, t.hint)))));
     paintTypes();
     paintAllowed();
+    const pre = window.pendingQuizTopic && window.pendingQuizTopic.videoId === videoId ? window.pendingQuizTopic.topic : "";
+    window.pendingQuizTopic = null;
     const count = h("input", { type: "number", min: "1", max: "30", value: "10", style: "width:80px", "aria-label": "Liczba pytań" });
     const topic = h("input", { type: "text", placeholder: sugg.keywords.length ? `np. ${sugg.keywords.slice(0, 2).join(" albo ")}` : "wpisz zagadnienie z wykładu", style: "width:100%", "aria-label": "Obszar" });
     const kwChips = sugg.keywords.length ? h("div", { class: "row sugg-kw", style: "margin-top:6px" }, h("span", { class: "muted small" }, "Pojęcia z wykładu:"),
       sugg.keywords.map((k) => h("button", { class: "small", type: "button", onclick: () => { topic.value = topic.value.trim() ? `${topic.value.trim()}, ${k}` : k; topic.focus(); } }, k))) : null;
+    if (pre) topic.value = pre;
     const title = h("input", { type: "text", placeholder: "(opcjonalnie) własna nazwa", style: "width:100%", "aria-label": "Nazwa quizu" });
     const model = h("select", { "aria-label": "Model" });
     const installed = ((state.system && state.system.ollama && state.system.ollama.installed) || []);
@@ -357,4 +360,5 @@ function mountQuizTab(container, videoId) {
   };
   renderList();
   loadList();
+  if (window.pendingQuizTopic && window.pendingQuizTopic.videoId === videoId) go({ name: "new" });
 }

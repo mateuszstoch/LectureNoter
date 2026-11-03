@@ -295,7 +295,7 @@ function mountDetail(id, tab) {
   const view = $("#view");
   const tabBtn = (key, label) => h("a", { class: "tab", role: "tab", href: `#/video/${id}${key === "process" ? "" : "/" + key}`, "aria-selected": String(tab === key) }, label);
   const tabs = h("div", { class: "tabs", role: "tablist" }, tabBtn("process", "Przetwarzanie"), tabBtn("notes", "Notatki"),
-    tabBtn("materials", "Materiały"), tabBtn("chat", "Czat"), tabBtn("quiz", "Quiz"));
+    tabBtn("materials", "Materiały"), tabBtn("chat", "Czat"), tabBtn("glossary", "Słownik"), tabBtn("quiz", "Quiz"));
   const content = h("div", { id: "dtab" });
   view.replaceChildren(h("div", { id: "dhead" }), tabs, content);
   if (tab === "process") {
@@ -309,6 +309,8 @@ function mountDetail(id, tab) {
     mountMaterialsTab(content, id);
   } else if (tab === "chat") {
     mountChatTab(content, id);
+  } else if (tab === "glossary") {
+    mountGlossaryTab(content, id);
   } else if (tab === "quiz") {
     mountQuizTab(content, id);
   }
@@ -528,7 +530,7 @@ function route() {
     renderServerLogs();
     return;
   }
-  const m = location.hash.match(/^#\/video\/([a-z0-9_-]+)(?:\/(notes|materials|chat|quiz))?/);
+  const m = location.hash.match(/^#\/video\/([a-z0-9_-]+)(?:\/(notes|materials|chat|quiz|glossary))?/);
   $("#view").classList.toggle("wide", !!m); // szerszy obszar w widoku wykładu
   if (m) {
     const tab = m[2] || "process";

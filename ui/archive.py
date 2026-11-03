@@ -24,7 +24,7 @@ TEXT_EXT = {".json", ".jsonl", ".md", ".txt"}
 
 EXCLUDED_NAMES = {"pipeline.log", "job.out", "run_state.json", "progress.json", "checkpoints.json", "worker_error.json", "audio.wav"}
 ALLOWED_FILES = {"meta.json", "transcript.json", "frames_metadata.json", "vision_context.json", "vision_context.jsonl",
-                 "lecture_notes.md", "lecture_notes.edited.md", "notes_meta.json", "chat.json", "quizzes.json", "suggestions.json", "stage_state.json"}
+                 "lecture_notes.md", "lecture_notes.edited.md", "notes_meta.json", "chat.json", "quizzes.json", "suggestions.json", "glossary.json", "outline.md", "flashcards.json", "stage_state.json"}
 ALLOWED_DIRS = {"frames": {".jpg"}, "chunks": {".md", ".json"}, "notes_history": {".md"}}
 _SAFE_NAME = re.compile(r"^[\w.\- ()]+$")
 
@@ -138,7 +138,7 @@ def _validate_data(zf, entries):
     if not isinstance(meta, dict) or not str(meta.get("title") or "").strip():
         raise ArchiveError("Plik meta.json w archiwum jest niepoprawny (brak tytulu).")
     for name, kind in (("transcript.json", list), ("frames_metadata.json", list), ("vision_context.json", list),
-                       ("stage_state.json", dict), ("notes_meta.json", dict), ("suggestions.json", dict)):
+                       ("stage_state.json", dict), ("notes_meta.json", dict), ("suggestions.json", dict), ("glossary.json", dict), ("flashcards.json", dict)):
         if name in names:
             if not isinstance(_load_json(zf, f"data/{name}"), kind):
                 raise ArchiveError(f"Plik {name} w archiwum ma niepoprawna strukture.")

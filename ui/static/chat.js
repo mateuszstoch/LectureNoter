@@ -270,5 +270,10 @@ function mountChatTab(container, videoId) {
   renderSide();
   renderMessages();
   loadChats();
+  if (window.pendingChatPrompt && window.pendingChatPrompt.videoId === videoId) { // np. z zaznaczonego fragmentu notatek lub słownika
+    input.value = window.pendingChatPrompt.text;
+    window.pendingChatPrompt = null;
+    setTimeout(() => input.focus(), 50);
+  }
   fetchSuggestions(videoId).then((d) => { sugg = d; paintSuggestions(); renderMessages(); });
 }

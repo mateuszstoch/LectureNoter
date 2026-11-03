@@ -115,6 +115,7 @@ function mountNotesTab(container, videoId) {
   const pref = (k, d) => { try { return localStorage.getItem(`lecturenoter.notes.${k}`) || d; } catch (_) { return d; } };
   const setPref = (k, v) => { try { localStorage.setItem(`lecturenoter.notes.${k}`, v); } catch (_) { /* tryb prywatny */ } };
   let tocOn = pref("toc", "on") === "on", width = pref("width", "wide");
+  let framesOn = pref("frames", "on") === "on", framesData = null, verifyOn = false;
   const root = h("div", {});
   container.replaceChildren(root);
 
@@ -147,6 +148,106 @@ function mountNotesTab(container, videoId) {
     applyLayout();
   }
 
+  // ---------- klatki z tablicy przy sekcjach ----------
+  async function insertFrames() {
+    const body = root.querySelector("#nbody");
+    if (!body) return;
+    body.querySelectorAll("figure.nframes").forEach((f) => f.remove());
+    if (!framesOn) return;
+    if (!framesData) { try { framesData = await api(`/api/videos/${videoId}/frames`); } catch (_) { framesData = []; } }
+    if (!framesData.length || !root.contains(body)) return;
+    const secs = [...body.querySelectorAll("h2")].map((hd) => {
+      let el = hd.nextElementSibling, t = null;
+      const own = hd.querySelector("a.ts"), om = own && own.textContent.match(/(\d+):(\d+):(\d+)/);
+      if (om) { t = tsToSec(om[1], om[2], om[3]); el = null; }   // znacznik w samym nagłówku
+      while (el && el.tagName !== "H2") {
+        const a = el.matches("a.ts") ? el : el.querySelector("a.ts");
+        const m = a && a.textContent.match(/(\d+):(\d+):(\d+)/);
+        if (m) { t = tsToSec(m[1], m[2], m[3]); break; }
+        el = el.nextElementSibling;
+      }
+      return { hd, t };
+    }).filter((x) => x.t != null);
+    secs.forEach((sec, i) => {
+      const next = secs[i + 1] ? secs[i + 1].t : Infinity;
+      const fr = framesData.filter((f) => f.timestamp >= sec.t - 45 && f.timestamp < next);
+      if (!fr.length) return;
+      const picks = fr.length <= 3 ? fr : [0, 1, 2].map((k) => fr[Math.round(k * (fr.length - 1) / 2)]);
+      sec.hd.after(h("figure", { class: "nframes" }, picks.map((f) => h("button", { class: "nframe", title: `Tablica ${fmtDur(f.timestamp)}: pokaż kontekst`,
+        onclick: () => openContextDialog(videoId, f.timestamp) },
+        h("img", { src: `/api/videos/${videoId}/frames/${f.file}`, loading: "lazy", alt: `Tablica ${fmtDur(f.timestamp)}` }), h("span", { class: "muted small" }, fmtDur(f.timestamp))))));
+    });
+  }
+  function toggleFrames() {
+    framesOn = !framesOn;
+    setPref("frames", framesOn ? "on" : "off");
+    const b = root.querySelector("#frames-toggle");
+    if (b) b.textContent = framesOn ? "Ukryj klatki" : "Pokaż klatki";
+    insertFrames();
+  }
+
+  // ---------- kontrola wierności ----------
+  async function toggleVerify() {
+    const body = root.querySelector("#nbody"), box = root.querySelector("#verify-box");
+    body.querySelectorAll(".nverify-weak, .nverify-uncertain").forEach((el) => el.classList.remove("nverify-weak", "nverify-uncertain"));
+    if (verifyOn) { verifyOn = false; box.hidden = true; root.querySelector("#verify-toggle").textContent = "Sprawdź wierność"; return; }
+    let r;
+    try { r = await api(`/api/videos/${videoId}/notes/verify`); } catch (e) { toast(e.message); return; }
+    verifyOn = true;
+    root.querySelector("#verify-toggle").textContent = "Ukryj kontrolę";
+    const norm = (t) => t.toLowerCase().replace(/\[\d+:\d+:\d+\]/g, "").replace(/[^\p{L}\p{N} ]/gu, " ").replace(/\s+/g, " ").trim();
+    const blocks = [...body.querySelectorAll("p, li, blockquote")].map((b) => ({ b, n: norm(b.textContent) }));
+    let weak = 0, unc = 0;
+    r.flagged.forEach((f) => {
+      const hit = blocks.find((x) => x.n.includes(norm(f.text).slice(0, 50)));
+      if (!hit) return;
+      hit.b.classList.add(f.kind === "uncertain" ? "nverify-uncertain" : "nverify-weak");
+      hit.b.title = f.kind === "uncertain" ? "Miejsce oznaczone [?]: model nie był pewny odczytu" : `Słabo poparte transkryptem i tablicą (${Math.round(f.support * 100)}% słów występuje w materiale)`;
+      if (f.kind === "uncertain") unc++; else weak++;
+    });
+    box.hidden = false;
+    box.textContent = r.has_sources
+      ? `Sprawdzono ${r.sentences} zdań: ${weak} słabo poparte materiałem (przerywana linia), ${unc} miejsc oznaczonych [?]. To heurystyka: zdanie bywa poprawnym streszczeniem własnymi słowami, więc traktuj je jako podpowiedź do weryfikacji.`
+      : "Brak transkryptu i odczytu tablicy do porównania.";
+  }
+
+  // ---------- zaznaczenie → wyjaśnij / rozwiń / zapytaj w czacie ----------
+  let selText = "";
+  const selBar = h("div", { class: "selbar", hidden: true, role: "toolbar", "aria-label": "Akcje dla zaznaczonego tekstu" },
+    h("button", { class: "small", onclick: () => explainSelection("simpler") }, "Wyjaśnij prościej"),
+    h("button", { class: "small", onclick: () => explainSelection("expand") }, "Rozwiń"),
+    h("button", { class: "small", onclick: askInChat }, "Zapytaj w czacie"));
+  function checkSelection() {
+    const sel = window.getSelection(), body = root.querySelector("#nbody");
+    const text = sel ? sel.toString().trim() : "";
+    if (!body || !sel.rangeCount || text.length < 12 || !body.contains(sel.anchorNode) || mode !== "view") { selBar.hidden = true; return; }
+    selText = text.slice(0, 2000);
+    const r = sel.getRangeAt(0).getBoundingClientRect();
+    selBar.hidden = false;
+    selBar.style.top = `${Math.max(8, r.top - 46)}px`;
+    selBar.style.left = `${Math.min(window.innerWidth - 330, Math.max(8, r.left))}px`;
+  }
+  async function explainSelection(kind) {
+    const text = selText;
+    selBar.hidden = true;
+    const out = h("div", { class: "notes-body", style: "max-width:none" }, h("span", { class: "muted" }, "Model układa wyjaśnienie…"));
+    openDialog(h("h2", {}, kind === "simpler" ? "Prostsze wyjaśnienie" : "Rozwinięcie"),
+      h("blockquote", { class: "small" }, text.length > 300 ? text.slice(0, 300) + "…" : text), out,
+      h("div", { class: "actions" }, h("button", { onclick: () => { closeDialog(); askInChat(text); } }, "Zapytaj w czacie"), h("button", { onclick: closeDialog }, "Zamknij")));
+    try {
+      const r = await api(`/api/videos/${videoId}/explain`, { method: "POST", body: { text, mode: kind } });
+      out.innerHTML = renderMarkdownHtml(r.text || "(pusta odpowiedź)");
+      linkifyTimestamps(out, (t) => openContextDialog(videoId, t));
+    } catch (e) { out.textContent = e.message; }
+  }
+  function askInChat(text) {
+    const t = typeof text === "string" ? text : selText;
+    selBar.hidden = true;
+    window.pendingChatPrompt = { videoId, text: `Wyjaśnij ten fragment notatek i podaj kontekst z wykładu: «${t.slice(0, 600)}»` };
+    location.hash = `#/video/${videoId}/chat`;
+  }
+  document.addEventListener("selectionchange", () => { if (!root.isConnected) return; clearTimeout(checkSelection.t); checkSelection.t = setTimeout(checkSelection, 250); });
+
   function toolbar() {
     const pandoc = sys && sys.pandoc;
     return h("div", { class: "toolbar" },
@@ -154,7 +255,9 @@ function mountNotesTab(container, videoId) {
         chip(data.source === "edited" ? "stale" : "done", data.source === "edited" ? "wersja edytowana" : "wersja wygenerowana"),
         h("span", { class: "muted small" }, fmtDate(data.updated)),
         h("button", { class: "small", id: "toc-toggle", title: "Schowaj lub pokaż spis treści", onclick: toggleToc }, "Ukryj spis"),
-        h("button", { class: "small", id: "width-toggle", title: "Zmień szerokość tekstu notatek", onclick: cycleWidth }, "Szerokość")),
+        h("button", { class: "small", id: "width-toggle", title: "Zmień szerokość tekstu notatek", onclick: cycleWidth }, "Szerokość"),
+        h("button", { class: "small", id: "frames-toggle", title: "Pokaż miniatury tablicy przy sekcjach", onclick: toggleFrames }, framesOn ? "Ukryj klatki" : "Pokaż klatki"),
+        h("button", { class: "small", id: "verify-toggle", title: "Zaznacz zdania słabo poparte transkryptem i tablicą oraz miejsca [?]", onclick: toggleVerify }, "Sprawdź wierność")),
       h("div", { class: "row" },
         h("input", { type: "text", id: "nsearch", placeholder: "Szukaj w notatkach…", "aria-label": "Szukaj w notatkach", oninput: (e) => doSearch(e.target.value), onkeydown: (e) => { if (e.key === "Enter") nextHit(); } }),
         h("span", { class: "muted small", id: "nhits" }),
@@ -177,8 +280,11 @@ function mountNotesTab(container, videoId) {
     const qBanner = bad ? h("div", { class: "banner warn" },
       `W ${q.degraded_chunks.length} z ${q.chunks} fragmentów model zapętlił się i powtórzenia zostały usunięte automatycznie, ale treść tych fragmentów (nr ${q.degraded_chunks.join(", ")}) może być niepełna. `,
       "Możesz wygenerować notatki ponownie (Przetwarzanie → Notatki (LLM) → Regeneruj).") : null;
-    root.replaceChildren(...kids(toolbar(), qBanner, h("div", { class: "notes-layout" }, tocEl, body)));
+    root.replaceChildren(...kids(toolbar(), qBanner, h("div", { id: "verify-box", class: "banner warn", hidden: true, style: "margin:0 0 14px" }),
+      h("div", { class: "notes-layout" }, tocEl, body), selBar));
     applyLayout();
+    verifyOn = false;
+    insertFrames();
     const pf = window.pendingNotesFocus;
     if (pf && pf.videoId === videoId) {  // przejście z wyszukiwarki biblioteki: podświetl rdzenie słów i przewiń do sekcji
       window.pendingNotesFocus = null;

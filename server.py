@@ -35,6 +35,7 @@ from ollama_client import OllamaClient, apply_profile, has_cuda, pick_profile, t
 from ui import materials, notes as notes_mod
 from ui.chat import ChatBusy, ChatError, ChatService, ChatStore, export_markdown
 import suggestions as sugg
+from ui import explain as explain_mod, glossary as gloss_mod, verify as verify_mod
 from ui.quiz import QuizError, QuizService
 from starlette.background import BackgroundTask
 
@@ -125,6 +126,12 @@ class QuizCreate(BaseModel):
     title: str | None = None
     types: list[str] | None = None
     adaptive: bool = False
+
+
+class ExplainRequest(BaseModel):
+    text: str
+    mode: str = "simpler"
+    model: str | None = None
 
 
 class QuizAnswer(BaseModel):
@@ -670,6 +677,59 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
             raise HTTPException(502, "Model nie zwrócił użytecznych podpowiedzi. Spróbuj ponownie.")
         sugg.save(wd, data, model)
         return sugg.load(wd, md)
+
+    def with_model(vid, fn):
+        """Wywolanie modelu z blokada GPU i czytelnymi bledami HTTP (dla krotkich zadan: wyjasnienia, slownik)."""
+        model = chat.default_model()
+        try:
+            if model not in ollama.installed_models():
+                raise HTTPException(400, f"Model '{model}' nie jest zainstalowany: uruchom `ollama pull {model}`.")
+            with chat.session(vid, model):
+                return fn(model)
+        except ChatBusy as e:
+            raise HTTPException(409, str(e))
+        except HTTPException:
+            raise
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except Exception as e:
+            raise HTTPException(502, f"Operacja modelu nie powiodła się: {e}")
+
+    @app.post("/api/videos/{vid}/explain")
+    def explain_selection(vid: str, req: ExplainRequest):
+        wd = wd_of(vid)
+        notes_md, transcript, vision = chat._materials(wd)
+        if not notes_md:
+            raise HTTPException(400, "Brak notatek: najpierw przetwórz film.")
+        return with_model(vid, lambda model: explain_mod.explain(ollama, wd, req.text, req.mode, model, chat.num_ctx(),
+                                                                notes_md, transcript, vision))
+
+    @app.get("/api/videos/{vid}/notes/verify")
+    def notes_verify(vid: str):
+        wd = wd_of(vid)
+        notes_md, transcript, vision = chat._materials(wd)
+        if not notes_md:
+            raise HTTPException(400, "Brak notatek.")
+        return verify_mod.check_notes(notes_md, transcript, vision)
+
+    @app.get("/api/videos/{vid}/glossary")
+    def glossary_get(vid: str):
+        return gloss_mod.load(wd_of(vid))
+
+    @app.post("/api/videos/{vid}/glossary")
+    def glossary_generate(vid: str):
+        wd = wd_of(vid)
+        md = notes_text(vid)
+        if not md:
+            raise HTTPException(400, "Brak notatek: najpierw przetwórz film.")
+
+        def run(model):
+            terms = gloss_mod.generate(ollama, model, md, chat.num_ctx())
+            if not terms:
+                raise RuntimeError("model nie zwrócił użytecznego słownika, spróbuj ponownie")
+            gloss_mod.save(wd, terms, model)
+        with_model(vid, run)
+        return gloss_mod.load(wd)
 
     # --- quizy ---
     def quiz_guard(fn):
