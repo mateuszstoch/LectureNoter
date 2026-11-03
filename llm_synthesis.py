@@ -43,7 +43,7 @@ OUTLINE_SYSTEM = (
     "używany jako kontekst przy pisaniu notatek. Zachowaj dokładnie trzy części: "
     "**Temat:** 1-2 zdania o czym jest wykład i jaki ma cel; "
     "**Przebieg:** 4-8 punktów w kolejności, w jakiej poruszano tematy; "
-    "**Słownik:** 8-15 kluczowych pojęć, symboli i skrótów, każde z jednozdaniową definicją, taką jak na wykładzie. "
+    "**Słownik:** 8-15 kluczowych pojęć, symboli i skrótów, każde z jednozdaniową definicją, taką jak na wykładzie; wzory i symbole matematyczne zapisuj w LaTeX w znakach dolara ($...$). "
     "Korzystaj wyłącznie z materiału, pomijaj elementy interfejsu programu, nie zgaduj, pisz tylko po polsku bez znaków chińskich."
 )
 SUMMARY_SYSTEM = ("Na podstawie listy nagłówków notatek z wykładu napisz po polsku krótkie (5-8 zdań) "

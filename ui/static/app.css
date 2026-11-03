@@ -407,3 +407,7 @@ pre.vlm { white-space: pre-wrap; background: var(--sunk); padding: 8px 12px; fon
 .gloss-term { font: 600 18px var(--serif); }
 .gloss-def { margin-top: 4px; color: var(--ink-2); line-height: 1.5; }
 .refresh-list { max-height: 260px; overflow: auto; display: grid; gap: 6px; padding: 8px 10px; border: 1px solid var(--rule); background: var(--sunk); }
+.math-inline { max-width: none; font-size: inherit; line-height: 1.5; overflow-x: auto; }
+.math-inline p { margin: 0; }
+.math-inline.gloss-term { font: 600 18px/1.35 var(--serif); }
+.math-inline .katex-display { margin: .4em 0; }

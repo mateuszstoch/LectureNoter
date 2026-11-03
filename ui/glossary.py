@@ -10,7 +10,7 @@ FILE = "glossary.json"
 SYSTEM = ("Pomagasz studentowi uczyć się z notatek z wykładu. Odpowiadasz po polsku, wyłącznie poprawnym JSON-em, "
           "używając wyłącznie alfabetu łacińskiego.")
 PROMPT = ('Na podstawie notatek z wykładu przygotuj słownik 10-25 najważniejszych pojęć, symboli i skrótów. Każde pojęcie ma krótką '
-          'definicję (1-2 zdania) zgodną z treścią wykładu. Format: {{"terms": [{{"term": "...", "definition": "..."}}]}}\n\n# Notatki\n{notes}')
+          'definicję (1-2 zdania) zgodną z treścią wykładu. Wzory i symbole matematyczne zapisuj w LaTeX w znakach dolara ($...$), np. $x^2$, $\\mathbb{{R}}$. Format: {{"terms": [{{"term": "...", "definition": "..."}}]}}\n\n# Notatki\n{notes}')
 LINE = re.compile(r"^\s*(?:[-*•]|\d+[.)])?\s*\**\s*([^:–—\n]{2,60}?)\s*\**\s*[:–—-]+\s*\**\s*(.{6,})$")
 
 

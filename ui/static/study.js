@@ -1,6 +1,13 @@
 "use strict";
 // Zakładka "Słownik": pojęcia wykładu z definicjami, szybkie przejścia do notatek, czatu i quizu.
 
+// Tekst z wzorami (KaTeX) i Markdownem: pojęcia, definicje i fiszki zawierają notację matematyczną ($...$).
+function mathEl(cls, text) {
+  const el = h("div", { class: `${cls} notes-body math-inline` });
+  el.innerHTML = renderMarkdownHtml(text || "");
+  return el;
+}
+
 function mountGlossaryTab(container, videoId) {
   const root = h("div", {});
   container.replaceChildren(root);
@@ -24,7 +31,7 @@ function mountGlossaryTab(container, videoId) {
   function paint() {
     const shown = data.terms.filter((t) => !query || t.term.toLowerCase().includes(query) || t.definition.toLowerCase().includes(query));
     list.replaceChildren(...kids(shown.length ? shown.map((t) => h("div", { class: "card gloss-item" },
-      h("div", { class: "gloss-term" }, t.term), h("div", { class: "gloss-def" }, t.definition),
+      mathEl("gloss-term", t.term), mathEl("gloss-def", t.definition),
       h("div", { class: "row", style: "margin-top:8px;gap:6px" },
         h("button", { class: "small", onclick: () => goNotes(t.term) }, "W notatkach"),
         h("button", { class: "small", onclick: () => goChat(t.term) }, "Zapytaj"),
@@ -118,8 +125,8 @@ function mountFlashcardsTab(container, videoId) {
         h("span", { class: "muted small" }, `Fiszka ${session.idx + 1} z ${session.queue.length}`)),
       h("div", { class: "card qcard", style: "margin-top:12px" },
         c.source ? h("div", { class: "muted small", style: "margin-bottom:6px" }, c.source) : null,
-        h("div", { class: "qtext", style: "white-space:pre-wrap" }, c.front),
-        session.shown ? h("div", { class: "qfeedback" }, h("div", { class: "qyours", style: "white-space:pre-wrap" }, c.back),
+        mathEl("qtext", c.front),
+        session.shown ? h("div", { class: "qfeedback" }, h("div", { class: "qyours" }, mathEl("", c.back)),
           h("div", { class: "row", style: "gap:8px;margin-top:8px;flex-wrap:wrap" },
             [[0, "Nie pamiętam"], [1, "Trudne"], [2, "Dobrze"], [3, "Łatwo"]].map(([g, l]) =>
               h("button", { class: g === 2 ? "primary" : "", onclick: () => grade(g) }, `${l} · ${nextHint(c, g)}`))))
@@ -146,7 +153,7 @@ function mountFlashcardsTab(container, videoId) {
             if (r) { toast(r.added ? "Dodano fiszkę." : "Taka fiszka już istnieje."); render(); }
           } }, "Dodaj")))),
       data.cards.length ? h("div", { class: "gloss-list" }, data.cards.map((c) => h("div", { class: "card gloss-item" },
-        h("div", { class: "gloss-term", style: "font-size:16px;white-space:pre-wrap" }, c.front), h("div", { class: "gloss-def", style: "white-space:pre-wrap" }, c.back),
+        mathEl("gloss-term", c.front), mathEl("gloss-def", c.back),
         h("div", { class: "row spread", style: "margin-top:8px" }, h("span", { class: "muted small" }, `${c.source || ""} · ${fmtDue(c.due)}`),
           h("button", { class: "small danger", onclick: async () => { if (await confirmDialog({ title: "Usuń fiszkę", text: "Fiszka zostanie usunięta.", confirmLabel: "Usuń", danger: true })) { await call(`${base}/${c.id}`, { method: "DELETE" }); render(); } } }, "Usuń")))))
         : h("div", { class: "empty" }, "Brak fiszek. Dodaj je ze słownika wykładu lub z błędnych odpowiedzi w quizach."));
