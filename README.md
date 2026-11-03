@@ -89,7 +89,7 @@ Spodziewaj się czasu wielokrotnie dłuższego niż na GPU: transkrypcja zbliżo
 
 **Szczegóły wykładu**
 - *Przetwarzanie:* regeneracja pojedynczego etapu (z podglądem skutków), uruchomienie od nowa, wznowienie po awarii, logi na żywo.
-- *Notatki:* Markdown z wzorami (KaTeX, offline), spis treści, wyszukiwanie, klikalne znaczniki czasu, edycja z historią wersji (wersja edytowana nie jest nadpisywana przy regeneracji). Eksport do Markdown, PDF (drukowanie przeglądarki) i Worda (wymaga `pandoc`).
+- *Notatki:* Markdown z wzorami (KaTeX, offline), spis treści (można go schować), regulowana szerokość tekstu (wąsko / szeroko / pełna; ustawienia zapamiętuje przeglądarka, a widok wykładu wykorzystuje szerokie ekrany), wyszukiwanie, klikalne znaczniki czasu, edycja z historią wersji (wersja edytowana nie jest nadpisywana przy regeneracji). Eksport do Markdown, PDF (drukowanie przeglądarki) i Worda (wymaga `pandoc`).
 - *Materiały:* klatki z tablicy i przeszukiwalny transkrypt.
 - *Czat:* pytania do notatek, transkryptu i odczytu tablicy; odpowiedzi strumieniowane, rozmowy zapisywane i eksportowalne (Markdown, PDF), model do wyboru spośród zainstalowanych w Ollamie.
 - *Podpowiedzi z wykładu:* przy generowaniu notatek model zapisuje słowa kluczowe i pytania pomocnicze (`suggestions.json`). Czat pokazuje je jako klikalne pojęcia i pytania (wstawiają się do pola, które możesz poprawić), a formularz quizu podpowiada pojęcia przy wyborze obszaru. Dla starszych wykładów podpowiedzi powstają z nagłówków notatek, a link „Wygeneruj lepsze modelem” tworzy je na żądanie (także po dużej edycji notatek).

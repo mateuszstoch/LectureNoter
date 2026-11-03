@@ -111,6 +111,10 @@ async function openContextDialog(videoId, t) {
 function mountNotesTab(container, videoId) {
   let data = null, mode = "view", draft = "", dirty = false, hits = [], hitIdx = -1;
   let sys = state.system;
+  const WIDTHS = [["standard", "Wąsko"], ["wide", "Szeroko"], ["full", "Pełna"]];
+  const pref = (k, d) => { try { return localStorage.getItem(`lecturenoter.notes.${k}`) || d; } catch (_) { return d; } };
+  const setPref = (k, v) => { try { localStorage.setItem(`lecturenoter.notes.${k}`, v); } catch (_) { /* tryb prywatny */ } };
+  let tocOn = pref("toc", "on") === "on", width = pref("width", "wide");
   const root = h("div", {});
   container.replaceChildren(root);
 
@@ -125,12 +129,32 @@ function mountNotesTab(container, videoId) {
     show();
   }
 
+  // Układ czytnika: spis treści można schować, a szerokość tekstu przełączać (zapamiętywane w przeglądarce).
+  function applyLayout() {
+    const lay = root.querySelector(".notes-layout");
+    if (lay) {
+      lay.classList.toggle("no-toc", !tocOn);
+      lay.dataset.width = width;
+    }
+    const tb = root.querySelector("#toc-toggle"), wb = root.querySelector("#width-toggle");
+    if (tb) { tb.textContent = tocOn ? "Ukryj spis" : "Pokaż spis"; tb.setAttribute("aria-pressed", String(!tocOn)); }
+    if (wb) wb.textContent = `Szerokość: ${(WIDTHS.find((w) => w[0] === width) || WIDTHS[1])[1]}`;
+  }
+  function toggleToc() { tocOn = !tocOn; setPref("toc", tocOn ? "on" : "off"); applyLayout(); }
+  function cycleWidth() {
+    width = WIDTHS[(WIDTHS.findIndex((w) => w[0] === width) + 1) % WIDTHS.length][0];
+    setPref("width", width);
+    applyLayout();
+  }
+
   function toolbar() {
     const pandoc = sys && sys.pandoc;
     return h("div", { class: "toolbar" },
       h("div", { class: "row" },
         chip(data.source === "edited" ? "stale" : "done", data.source === "edited" ? "wersja edytowana" : "wersja wygenerowana"),
-        h("span", { class: "muted small" }, fmtDate(data.updated))),
+        h("span", { class: "muted small" }, fmtDate(data.updated)),
+        h("button", { class: "small", id: "toc-toggle", title: "Schowaj lub pokaż spis treści", onclick: toggleToc }, "Ukryj spis"),
+        h("button", { class: "small", id: "width-toggle", title: "Zmień szerokość tekstu notatek", onclick: cycleWidth }, "Szerokość")),
       h("div", { class: "row" },
         h("input", { type: "text", id: "nsearch", placeholder: "Szukaj w notatkach…", "aria-label": "Szukaj w notatkach", oninput: (e) => doSearch(e.target.value), onkeydown: (e) => { if (e.key === "Enter") nextHit(); } }),
         h("span", { class: "muted small", id: "nhits" }),
@@ -154,6 +178,7 @@ function mountNotesTab(container, videoId) {
       `W ${q.degraded_chunks.length} z ${q.chunks} fragmentów model zapętlił się i powtórzenia zostały usunięte automatycznie, ale treść tych fragmentów (nr ${q.degraded_chunks.join(", ")}) może być niepełna. `,
       "Możesz wygenerować notatki ponownie (Przetwarzanie → Notatki (LLM) → Regeneruj).") : null;
     root.replaceChildren(...kids(toolbar(), qBanner, h("div", { class: "notes-layout" }, tocEl, body)));
+    applyLayout();
     const pf = window.pendingNotesFocus;
     if (pf && pf.videoId === videoId) {  // przejście z wyszukiwarki biblioteki: podświetl rdzenie słów i przewiń do sekcji
       window.pendingNotesFocus = null;

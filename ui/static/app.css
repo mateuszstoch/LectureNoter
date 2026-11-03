@@ -77,6 +77,8 @@ code { font-family: var(--mono); font-size: .88em; background: var(--sunk); padd
 #view .banner { width: auto; max-width: none; margin: 14px 0 0; }
 .toolbar + .banner { margin: -8px 0 26px; }
 #view { max-width: 1080px; margin: 0 auto; padding: 28px 24px 64px; }
+body:has(#view.wide) .banner { max-width: 1632px; }
+#view.wide { max-width: min(1680px, 100%); }   /* widok wykładu: więcej miejsca na dużych ekranach */
 
 /* --- przyciski i pola --- */
 button, .btn {
@@ -228,6 +230,12 @@ dialog h2 { font: 600 22px var(--serif); text-transform: none; letter-spacing: -
 .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 10px 16px; flex-wrap: wrap; margin-bottom: 22px; padding-bottom: 14px; border-bottom: 1px solid var(--rule); }
 .btn { display: inline-block; }
 .notes-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 56px; align-items: start; }
+/* szerokość tekstu notatek (przycisk w pasku) i schowany spis treści */
+.notes-layout[data-width=wide] .notes-body { max-width: 100ch; }
+.notes-layout[data-width=full] .notes-body { max-width: none; }
+.notes-layout.no-toc { grid-template-columns: minmax(0, 1fr); }
+.notes-layout.no-toc .toc { display: none; }
+@media (min-width: 1500px) { .notes-body { font-size: 18px; } }
 @media (max-width: 920px) { .notes-layout { grid-template-columns: minmax(0, 1fr); gap: 24px; } .toc { position: static !important; max-height: 190px !important; } }
 .toc { position: sticky; top: 20px; max-height: calc(100vh - 60px); overflow: auto; font-size: 13px; border-left: 1px solid var(--rule); padding-left: 14px; }
 .toc .label { font: 600 11px var(--sans); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }

@@ -529,6 +529,7 @@ function route() {
     return;
   }
   const m = location.hash.match(/^#\/video\/([a-z0-9_-]+)(?:\/(notes|materials|chat|quiz))?/);
+  $("#view").classList.toggle("wide", !!m); // szerszy obszar w widoku wykładu
   if (m) {
     const tab = m[2] || "process";
     if (detailId !== m[1] || detailTab !== tab || !$("#dhead")) {
