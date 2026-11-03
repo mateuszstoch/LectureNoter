@@ -103,6 +103,8 @@ Generowane lokalnym modelem z notatek i transkryptu.
 
 Wybierasz liczbę pytań (1–30) i obszar: cały wykład, wybrane sekcje notatek lub dowolny temat. Pytania sprawdzają zrozumienie, nie szczegóły typu daty. Po każdej odpowiedzi widzisz poprawną odpowiedź i uzasadnienie, także dlaczego pozostałe opcje są błędne. Quiz jest zaliczony od 80% (`quiz.pass_ratio`). Quizy zapisują się z historią podejść (`work/<film>/quizzes.json`), można je powtarzać i usuwać. Kilka quizów czeka w kolejce na model.
 
+Generowanie ma dwa etapy: najpierw model planuje listę **różnych zagadnień** z materiału (to eliminuje powtarzające się pytania), potem układa pytanie do każdego z nich. Gdy pytanie jest niepoprawne albo się powtarza, bierze kolejne zagadnienie (lub planuje nowe) i próbuje dalej, aż liczba pytań dojdzie do wybranej. Poddaje się dopiero po 2× tylu próbach (`quiz.attempts_factor`) i wtedy pokazuje, ile udało się ułożyć i dlaczego odrzucano pytania. W pytaniach ABCD dozwolone są też 2 opcje (prawda/fałsz).
+
 ### Jakość notatek
 
 Mały model potrafi zapętlić się w powtórzeniach. Generator to wykrywa: ponawia generowanie z inną temperaturą i karą za powtórzenia (do 2 razy), a w ostateczności wycina powtórzenia. Pętle w opisach tablicy i transkrypcji są usuwane przed syntezą, a zdublowane sekcje scalane. Gdy fragmenty trzeba było naprawić, zakładka Notatki pokazuje ostrzeżenie z propozycją ponownej generacji. Parametry: `llm.repeat_penalty`, `llm.loop_retries`.

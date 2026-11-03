@@ -2,6 +2,7 @@
 import contextlib
 import difflib
 import json
+import math
 import random
 import re
 import threading
@@ -36,8 +37,8 @@ FORMATS = {
     "open": ('Pytania otwarte, na które odpowiada się kilkoma zdaniami. Format: {"questions": [{"question": "...", '
              '"model_answer": "wzorcowa odpowiedź (2-4 zdania)", "key_points": ["kluczowy element 1", "kluczowy element 2"], '
              '"section": "tytuł sekcji, z której pochodzi"}]}'),
-    "single": ('Pytania jednokrotnego wyboru: dokładnie 4 opcje, dokładnie JEDNA poprawna; pozostałe to wiarygodne, ale błędne '
-               'dystraktory (typowe pomyłki). Przy każdej opcji napisz w "why", dlaczego jest poprawna albo dlaczego jest błędna '
+    "single": ('Pytania jednokrotnego wyboru: zwykle 4 opcje, dokładnie JEDNA poprawna; pozostałe to wiarygodne, ale błędne '
+               'dystraktory (typowe pomyłki). Dla twierdzenia, które jest prawdziwe albo fałszywe, użyj dokładnie 2 opcji: „Prawda” i „Fałsz”. Przy każdej opcji napisz w "why", dlaczego jest poprawna albo dlaczego jest błędna '
                '(1-2 zdania). Opcje bez liter A/B/C/D. Format: {"questions": [{"question": "...", "options": '
                '[{"text": "...", "correct": true, "why": "..."}, {"text": "...", "correct": false, "why": "..."}], '
                '"section": "tytuł sekcji"}]}'),
@@ -182,8 +183,8 @@ def _normalize(raw, qtype, rng=random):
         if len({_norm(o["text"]) for o in opts}) != len(opts):
             raise ValueError("powtorzone opcje")
         n_ok = sum(o["correct"] for o in opts)
-        if not 3 <= len(opts) <= 6:
-            raise ValueError(f"{len(opts)} opcji zamiast 3-6")
+        if not 2 <= len(opts) <= 6:  # 2 opcje = prawda/falsz
+            raise ValueError(f"{len(opts)} opcji zamiast 2-6")
         if qtype == "single" and n_ok != 1:
             raise ValueError(f"{n_ok} poprawnych opcji w pytaniu jednokrotnego wyboru")
         if qtype == "multi" and not 1 <= n_ok < len(opts):
@@ -504,62 +505,135 @@ class QuizService:
     def _run(self, video_id, st, quiz):
         qid, qtype, count, model = quiz["id"], quiz["type"], quiz["requested"], quiz["model"]
         wd = self.lib.workdir(video_id)
-        predict = int(self.qcfg.get("num_predict", 3000))
+        predict = int(self.qcfg.get("num_predict", 1500))
         num_ctx = self.chat.num_ctx()
         budget = max(1000, num_ctx - predict - 1200)
         groups = self._groups(wd, quiz["scope"], budget)
         if not groups:
             raise QuizError("Wybrany obszar nie zawiera materiału, z którego można ułożyć pytania.")
-        plan = self._split_counts(count, groups)
-        questions, stems, rejected = [], [], {}
-        opts = {"num_ctx": num_ctx, "num_predict": predict, "temperature": float(self.qcfg.get("temperature", 0.5))}
+        plan = [{"material": m, "want": w, "got": 0, "topics": [], "used": [], "dry": False} for m, w in self._split_counts(count, groups)]
+        limit = max(count + 1, int(count * float(self.qcfg.get("attempts_factor", 2))))
+        ctx = {"questions": [], "stems": [], "rejected": {}, "attempts": 0, "limit": limit, "count": count, "qid": qid, "st": st,
+               "video": video_id, "type": qtype, "model": model,
+               "opts": {"num_ctx": num_ctx, "num_predict": predict, "temperature": float(self.qcfg.get("temperature", 0.5))}}
+
+        def need():
+            return len(ctx["questions"]) < count and ctx["attempts"] < limit
+
         with self._wait_session(video_id, model, lambda: st.exists(qid)):
-            for material, want in plan:
-                got, attempts = 0, 0
-                while got < want and attempts < 3:
-                    if not st.exists(qid):
-                        raise _Deleted()
-                    attempts += 1
-                    n = min(BATCH, want - got) if attempts == 1 else want - got
-                    n = min(n, BATCH)
-                    prompt = self._prompt(qtype, n, material, stems)
-                    raw = self.client.generate(model, prompt, system=SYSTEM, options=opts, keep_alive="10m", format="json")
-                    found = questions_of(raw)
-                    if not found:
-                        rejected["nieczytelna odpowiedz modelu"] = rejected.get("nieczytelna odpowiedz modelu", 0) + 1
-                        logger.warning(f"quiz {video_id}/{qid}: nie rozpoznano pytan w odpowiedzi modelu: {(raw or '')[:400]!r}")
-                    for r in found:
-                        if got >= want:
-                            break
-                        try:
-                            q = _normalize(r, qtype)
-                        except ValueError as e:
-                            rejected[str(e)] = rejected.get(str(e), 0) + 1
-                            logger.info(f"quiz {video_id}/{qid}: odrzucono pytanie ({e}): {json.dumps(r, ensure_ascii=False)[:300]}")
-                            continue
-                        if too_similar(q["question"], stems):
-                            rejected["powtorzone pytanie"] = rejected.get("powtorzone pytanie", 0) + 1
-                            continue
-                        q["id"] = uuid.uuid4().hex[:6]
-                        questions.append(q)
-                        stems.append(q["question"])
-                        got += 1
-                    done = len(questions)
-                    st.update(qid, lambda x, d=done: x.update(progress={"done": d, "total": count}, questions=list(questions)))
+            for g in plan:  # faza A: kazda grupa materialu dostarcza swoja czesc pytan
+                while need() and g["got"] < g["want"] and not g["dry"]:
+                    self._step(ctx, g)
+            while need() and not all(g["dry"] for g in plan):  # faza B: brakujace pytania z dowolnych grup, az do limitu prob
+                for g in plan:
+                    if need() and not g["dry"]:
+                        self._step(ctx, g)
+        questions, rejected = ctx["questions"], ctx["rejected"]
         why = "; ".join(f"{r} (×{n})" for r, n in sorted(rejected.items(), key=lambda x: -x[1])[:3])
         if not questions:
             raise QuizError("Model nie zwrócił poprawnych pytań" + (f" (odrzucone: {why})" if why else "")
                             + ". Spróbuj ponownie lub wybierz inny, większy model.")
-        warn = (f"Udało się ułożyć {len(questions)} z {count} pytań" + (f" (odrzucone: {why})" if why else "") + ".") if len(questions) < count else None
+        warn = (f"Udało się ułożyć {len(questions)} z {count} pytań mimo {ctx['attempts']} prób"
+                + (f" (odrzucone: {why})" if why else "") + ".") if len(questions) < count else None
         st.update(qid, lambda x: x.update(status="ready", questions=questions, warning=warn, error=None,
                                           progress={"done": len(questions), "total": count}))
-        logger.info(f"quiz {video_id}/{qid}: {len(questions)}/{count} pytan ({qtype})")
+        logger.info(f"quiz {video_id}/{qid}: {len(questions)}/{count} pytan ({qtype}), prob: {ctx['attempts']}")
+
+    def _reject(self, ctx, reason, detail=None):
+        ctx["rejected"][reason] = ctx["rejected"].get(reason, 0) + 1
+        if detail is not None:
+            logger.info(f"quiz {ctx['video']}/{ctx['qid']}: odrzucono ({reason}): {detail}")
+
+    def _plan_topics(self, ctx, g):
+        """Etap 1: lista roznych zagadnien do zapytania (z zapasem), z pominieciem juz uzytych."""
+        k = max(2, math.ceil((g["want"] - g["got"]) * 1.5))
+        avoid = ("\n\nZagadnienia już wykorzystane (nie powtarzaj ich):\n" + "\n".join(f"- {t}" for t in g["used"][-30:])) if g["used"] else ""
+        prompt = (f"Zaplanuj quiz sprawdzający zrozumienie wykładu. Wypisz {k} RÓŻNYCH zagadnień (pojęcie, twierdzenie, mechanizm, "
+                  "zależność lub zastosowanie) z poniższego materiału, z których da się ułożyć dobre pytanie. Zagadnienia mają dotyczyć "
+                  "różnych części materiału. Każde opisz krótko (kilka słów) i podaj tytuł sekcji, z której pochodzi. "
+                  f'Format: {{"topics": [{{"topic": "...", "section": "tytuł sekcji"}}]}}{avoid}\n\n# Materiał\n{g["material"]}')
+        try:
+            raw = self.client.generate(ctx["model"], prompt, system=SYSTEM, options=ctx["opts"], keep_alive="10m", format="json")
+        except OllamaError:
+            raise
+        data = extract_json(raw)
+        items = data.get("topics") if isinstance(data, dict) else data if isinstance(data, list) else None
+        if items is None:
+            items = _salvage_objects(raw or "")
+        out = []
+        for it in items or []:
+            if isinstance(it, str):
+                it = {"topic": it}
+            if not isinstance(it, dict):
+                continue
+            t = _text(_pick(it, "topic", "zagadnienie", "temat"), 200)
+            if t and not too_similar(t, g["used"] + [x["topic"] for x in out]):
+                out.append({"topic": t, "section": _text(_pick(it, "section", "sekcja"), 160)})
+        return out
 
     @staticmethod
-    def _prompt(qtype, n, material, stems):
+    def _focus(material, section):
+        """Fragment materialu odpowiadajacy sekcji zagadnienia (mniejszy prompt, pytanie z wlasciwego miejsca)."""
+        blocks = re.split(r"(?m)^(?=## )", material)
+        if len(blocks) < 2 or not section:
+            return material
+        ns = _norm(section)
+        for i, b in enumerate(blocks):
+            title = _norm(b.split("\n", 1)[0].lstrip("# "))
+            if title and (title == ns or title in ns or ns in title):
+                return b + (blocks[i + 1] if len(b) < 1200 and i + 1 < len(blocks) else "")
+        return material
+
+    def _step(self, ctx, g):
+        """Jedna proba: bierze kolejne zagadnienie (w razie potrzeby planuje nowe) i prosi o jedno pytanie."""
+        st, qid = ctx["st"], ctx["qid"]
+        if not st.exists(qid):
+            raise _Deleted()
+        if not g["topics"]:
+            g["topics"] = self._plan_topics(ctx, g)
+            if not g["topics"]:
+                if g.get("planless"):
+                    g["dry"] = True  # model nie potrafi juz wskazac nowych zagadnien z tej grupy
+                    return
+                g["planless"] = True
+                g["topics"] = [{"topic": None, "section": ""}]  # awaryjnie: pytanie bez narzuconego zagadnienia
+        item = g["topics"].pop(0)
+        ctx["attempts"] += 1
+        topic = item["topic"]
+        if topic:
+            g["used"].append(topic)
+        material = self._focus(g["material"], item["section"]) if topic else g["material"]
+        prompt = self._prompt(ctx["type"], material, ctx["stems"], topic)
+        raw = self.client.generate(ctx["model"], prompt, system=SYSTEM, options=ctx["opts"], keep_alive="10m", format="json")
+        found = questions_of(raw)
+        if not found:
+            self._reject(ctx, "nieczytelna odpowiedz modelu")
+            logger.warning(f"quiz {ctx['video']}/{qid}: nie rozpoznano pytan w odpowiedzi modelu: {(raw or '')[:400]!r}")
+            return
+        for r in found[:1]:
+            try:
+                q = _normalize(r, ctx["type"])
+            except ValueError as e:
+                self._reject(ctx, str(e), json.dumps(r, ensure_ascii=False)[:300])
+                return
+            if too_similar(q["question"], ctx["stems"]):
+                self._reject(ctx, "powtorzone pytanie")
+                return
+            q["id"] = uuid.uuid4().hex[:6]
+            if topic:
+                q["topic"] = topic
+            ctx["questions"].append(q)
+            ctx["stems"].append(q["question"])
+            g["got"] += 1
+            done = len(ctx["questions"])
+            st.update(qid, lambda x, d=done, qs=list(ctx["questions"]): x.update(progress={"done": d, "total": ctx["count"]}, questions=qs))
+
+    @staticmethod
+    def _prompt(qtype, material, stems, topic=None):
         avoid = ("\n\nNie powtarzaj tych pytań:\n" + "\n".join(f"- {s[:140]}" for s in stems[-20:])) if stems else ""
-        return (f"Ułóż {n} {'pytanie' if n == 1 else 'pytań'} na podstawie poniższego materiału z wykładu.\n{FORMATS[qtype]}{avoid}\n\n"
-                f"# Materiał\n{material}")
+        focus = f"\nPytanie ma dotyczyć zagadnienia: «{topic}»." if topic else ""
+        # material na poczatku: Ollama zachowuje wspolny prefiks promptu w pamieci podrecznej, wiec kolejne pytania z tego samego materialu sa tansze
+        return (f"# Materiał\n{material}\n\n# Zadanie\nUłóż 1 pytanie na podstawie powyższego materiału z wykładu.{focus}\n{FORMATS[qtype]}{avoid}")
 
     # ---------- podejscia ----------
     def start_attempt(self, video_id, qid):

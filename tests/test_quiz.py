@@ -32,6 +32,8 @@ class QuizOllama(FakeOllama):
     def __init__(self, **kw):
         super().__init__(**kw)
         self.n = 0
+        self.q_calls = 0
+        self.fail_first = 0   # tyle pierwszych wywolan o pytanie zwraca niepoprawne pytanie
         self.delay = 0
         self.mode = None   # nadpisanie: "garbage" | "error"
         self.grade = {"score": 1, "feedback": "Dobrze."}
@@ -45,6 +47,14 @@ class QuizOllama(FakeOllama):
             return json.dumps(self.grade)
         if self.mode == "garbage":
             return "to nie jest json"
+        if "Zaplanuj quiz" in prompt:
+            k = int(prompt.split("Wypisz ")[1].split()[0])
+            rnd = random.Random(self.n + len(self.generated))
+            return json.dumps({"topics": [{"topic": "".join(rnd.choice("abcdefghijklmnoprstuwz") for _ in range(14)), "section": "Organizacja"}
+                                          for _ in range(k)]})
+        self.q_calls += 1
+        if self.q_calls <= self.fail_first:
+            return json.dumps({"questions": [{"question": "Złe?", "options": [{"text": "a", "correct": True}, {"text": "b", "correct": True}]}]})
         want = int(prompt.split("Ułóż ")[1].split()[0])
         out = []
         for _ in range(want):
@@ -225,7 +235,7 @@ def test_scope_sections_and_topic_reach_prompt(qc):
     p = fake.generated[-1]
     assert "Zaliczenie od 6 punktów" in p and "nieskończoną taśmę" not in p
     make(c, count=2, topic="problem decyzyjny")
-    assert "Problem decyzyjny to pytanie" in fake.generated[-1]
+    assert any("Problem decyzyjny to pytanie" in g for g in fake.generated[-4:])   # material (plan zagadnien) pochodzi z wyszukania po temacie
     q = make(c, count=2, sections=["Nie ma takiej"])
     assert q["status"] == "error" and "obszar" in q["error"]
 
@@ -327,3 +337,34 @@ def test_rejection_reasons_reach_error_message(qc):
     fake.generate = bad
     q = make(c, type="single", count=2)
     assert q["status"] == "error" and "poprawnych opcji" in q["error"]
+
+
+def test_true_false_two_options_allowed():
+    tf = {"question": "Czy każdy język regularny jest bezkontekstowy?", "options": [
+        {"text": "Prawda", "correct": True, "why": "Hierarchia Chomsky'ego."}, {"text": "Fałsz", "correct": False, "why": "To jest odwrotnie."}]}
+    q = qz.normalize_question(tf, "single")
+    assert q and len(q["options"]) == 2
+    assert qz.normalize_question({**tf, "options": tf["options"][:1]}, "single") is None
+
+
+def test_generation_continues_until_requested_count(qc):
+    c, fake, app = qc
+    fake.fail_first = 5            # pierwsze 5 prob jest niepoprawnych, ale limit to 2x liczby pytan
+    q = make(c, type="single", count=5)
+    assert q["status"] == "ready" and len(q["questions"]) == 5 and not q["warning"]
+    assert all(x.get("topic") for x in q["questions"])      # pytania powstaja z zaplanowanych zagadnien
+
+
+def test_attempt_limit_is_twice_requested(qc):
+    c, fake, app = qc
+    fake.fail_first = 10_000       # model nigdy nie daje poprawnego pytania
+    q = make(c, type="single", count=4)
+    assert q["status"] == "error" and "poprawnych opcji" in q["error"]
+    assert fake.q_calls == 8       # dokladnie 2x liczba pytan, potem poddajemy sie
+
+
+def test_distinct_topics_used_once(qc):
+    c, fake, app = qc
+    q = make(c, type="open", count=6)
+    topics = [x["topic"] for x in q["questions"]]
+    assert len(topics) == len(set(topics)) == 6
