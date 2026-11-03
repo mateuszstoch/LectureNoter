@@ -36,7 +36,7 @@ from ui import materials, notes as notes_mod
 from ui.chat import GLOBAL, ChatBusy, ChatError, ChatService, ChatStore, export_markdown
 import suggestions as sugg
 from ui import explain as explain_mod, glossary as gloss_mod, verify as verify_mod
-from ui import flashcards as fc_mod, progress as progress_mod
+from ui import flashcards as fc_mod, health as health_mod, progress as progress_mod
 from ui.quiz import QuizError, QuizService, QuizStore
 from starlette.background import BackgroundTask
 
@@ -128,6 +128,10 @@ class QuizCreate(BaseModel):
     title: str | None = None
     types: list[str] | None = None
     adaptive: bool = False
+
+
+class PullRequest(BaseModel):
+    model: str
 
 
 class CardCreate(BaseModel):
@@ -753,6 +757,27 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
             gloss_mod.save(wd, terms, model)
         with_model(vid, run)
         return gloss_mod.load(wd)
+
+    # --- diagnostyka i pobieranie modeli ---
+    pulls = health_mod.PullManager(getattr(ollama, "host", "http://localhost:11434"))
+
+    @app.get("/api/environment")
+    def environment():
+        installed, ok = [], False
+        try:
+            installed = ollama.installed_models()
+            ok = True
+        except Exception:
+            pass
+        return {"checks": health_mod.run_checks(C(), installed, ok, lib.work_dir), "pulls": pulls.snapshot()}
+
+    @app.post("/api/models/pull")
+    def pull_model(req: PullRequest, request: Request):
+        require_header(request)  # pobieranie to duza operacja sieciowa: tylko z naszego interfejsu
+        try:
+            return pulls.start(req.model.strip())
+        except ValueError as e:
+            raise HTTPException(400, str(e))
 
     # --- fiszki ---
     def card_guard(fn):

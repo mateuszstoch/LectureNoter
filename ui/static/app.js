@@ -142,11 +142,11 @@ function updateBanner() {
   }
   if (sys && sys.ollama && !sys.ollama.ok) {
     b.className = "banner warn";
-    b.textContent = "Ollama nie odpowiada. Uruchom ją (ollama serve), inaczej etapy VLM i LLM zakończą się błędem.";
+    b.replaceChildren("Ollama nie odpowiada. Uruchom ją (ollama serve), inaczej etapy VLM i LLM zakończą się błędem. ", h("a", { href: "#/environment" }, "Diagnostyka"));
     b.hidden = false;
   } else if (missing.length) {
     b.className = "banner warn";
-    b.replaceChildren("Brak modeli w Ollamie: ", ...missing.flatMap((m) => [h("code", {}, `ollama pull ${m}`), " "]));
+    b.replaceChildren("Brak modeli w Ollamie: ", ...missing.flatMap((m) => [h("code", {}, `ollama pull ${m}`), " "]), h("a", { href: "#/environment" }, "Pobierz w Diagnostyce"));
     b.hidden = false;
   } else {
     b.hidden = true;
@@ -527,6 +527,11 @@ function route() {
     return;
   }
   lastHash = location.hash || "#/";
+  if (location.hash === "#/environment") {
+    detailId = null; stopLogs();
+    mountEnvironmentView();
+    return;
+  }
   if (location.hash === "#/chat") {
     detailId = null; stopLogs();
     mountGlobalChat();
@@ -561,7 +566,7 @@ function rerender() {
   if (state.stopped) return;
   renderSys();
   updateBanner();
-  if (["#/logs", "#/progress", "#/chat"].includes(location.hash)) { if (location.hash === "#/chat" && activeTab && activeTab.onState) activeTab.onState(); return; }
+  if (["#/logs", "#/progress", "#/chat", "#/environment"].includes(location.hash)) { if (location.hash === "#/chat" && activeTab && activeTab.onState) activeTab.onState(); return; }
   if (detailId && location.hash.startsWith("#/video/")) updateDetail();
   else renderLibrary();
 }

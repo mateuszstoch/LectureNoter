@@ -213,3 +213,45 @@ function mountGlobalChat() {
     h("p", { class: "muted", style: "margin:-6px 0 16px" }, "Pytania do notatek całej biblioteki lub wybranego folderu."), content);
   mountChatTab(content, "_all");
 }
+
+// ---------- diagnostyka środowiska i pobieranie modeli ----------
+let envTimer = null;
+
+async function mountEnvironmentView() {
+  const view = $("#view");
+  activeTab = null;
+  view.classList.remove("wide");
+  clearTimeout(envTimer);
+  const list = h("div", {});
+  view.replaceChildren(h("div", { class: "row spread", style: "flex-wrap:wrap" }, h("h1", {}, "Diagnostyka"),
+    h("button", { class: "small", onclick: () => load() }, "Sprawdź ponownie")),
+    h("p", { class: "muted", style: "margin:-6px 0 16px" }, "Czy środowisko ma wszystko, czego potrzebuje aplikacja. Brakujące modele można pobrać jednym kliknięciem."), list);
+
+  async function pull(model) {
+    try { await api("/api/models/pull", { method: "POST", body: { model } }); } catch (e) { toast(e.message); }
+    load();
+  }
+
+  async function load() {
+    clearTimeout(envTimer);
+    let d;
+    try { d = await api("/api/environment"); } catch (e) { list.textContent = e.message; return; }
+    if (location.hash !== "#/environment") return;
+    const label = { ok: "ok", warn: "uwaga", fail: "brak" }, cls = { ok: "ok", warn: "stale", fail: "error" };
+    list.replaceChildren(...kids(d.checks.map((c) => {
+      const p = c.model ? d.pulls[c.model] : null;
+      const running = p && !p.done;
+      return h("div", { class: "card env-row" },
+        h("div", { class: "row spread" }, h("div", { style: "min-width:0" }, h("strong", {}, c.label), h("div", { class: "muted small", style: "overflow-wrap:anywhere" }, c.detail)),
+          h("div", { class: "row" },
+            c.model && c.status !== "ok" ? h("button", { class: "small primary", disabled: !!running, onclick: () => pull(c.model) }, running ? "Pobieranie…" : "Pobierz") : null,
+            h("span", { class: `chip ${cls[c.status]}` }, label[c.status]))),
+        p ? h("div", { style: "margin-top:8px" },
+          p.error ? h("div", { class: "small", style: "color:var(--accent)" }, `Błąd: ${p.error}`)
+            : h("div", {}, h("div", { class: "qbar", style: "margin:4px 0" }, h("div", { style: `width:${Math.round(p.percent || 0)}%` })),
+              h("div", { class: "muted small" }, p.done ? "Pobrano." : `${p.status || ""} ${p.percent ? Math.round(p.percent) + "%" : ""}`))) : null);
+    })));
+    if (Object.values(d.pulls).some((p) => !p.done)) envTimer = setTimeout(load, 1500);
+  }
+  load();
+}
