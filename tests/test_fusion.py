@@ -20,6 +20,8 @@ class FakeClient:
         self.calls.append((model, prompt, kw))
         if "system" in kw and kw["system"] == ls.SUMMARY_SYSTEM:
             return "Podsumowanie."
+        if "system" in kw and kw["system"] == ls.OUTLINE_SYSTEM:
+            return "**Temat:** Wykład o testowaniu. " + "**Przebieg:** wstęp, rozwinięcie, zakończenie. " * 3 + "**Słownik:** tresc: pojęcie testowe."
         return "# Temat\n## Sekcja\n- punkt"
 
     def unload(self, model): self.unloaded.append(model)
@@ -66,7 +68,7 @@ def test_synthesis_resume_and_unload(tmp_path):
     assert c.unloaded == ["m"]
     c2 = FakeClient()
     ls.run_synthesis(tmp_path, CFG_LLM, "m", 4096, client=c2)
-    assert len(c2.calls) == 2 and n_first > 3  # tylko podsumowanie i podpowiedzi; chunki z cache
+    assert len(c2.calls) == 2 and n_first > 4  # tylko podsumowanie i podpowiedzi; szkielet i chunki z cache
 
 
 def test_vlm_resume_and_unload(tmp_path):
@@ -126,5 +128,69 @@ def test_second_chunk_gets_covered_topics(tmp_path):
         [{"start": i * 700, "end": i * 700 + 5, "text": "tresc"} for i in range(3)]), encoding="utf-8")
     c = FakeClient()
     ls.run_synthesis(tmp_path, CFG_LLM, "m", 4096, client=c)
-    prompts = [call[1] for call in c.calls]
+    prompts = [call[1] for call in c.calls if call[2].get("system") == ls.SYSTEM]
     assert "Tematy już opisane" not in prompts[0] and "Sekcja" in prompts[1]
+
+
+def _tl(n=12):
+    return [{"start": i * 120, "end": i * 120 + 5, "text": f"tresc{i} " * 50} for i in range(n)]
+
+
+def test_synthesis_chunk_prompts_carry_outline_and_continuity(tmp_path):
+    (tmp_path / "transcript.json").write_text(json.dumps(_tl()), encoding="utf-8")
+    c = FakeClient()
+    ls.run_synthesis(tmp_path, CFG_LLM, "m", 4096, client=c)
+    assert (tmp_path / "outline.md").exists()
+    chunk_calls = [x for x in c.calls if x[2].get("system") == ls.SYSTEM]
+    assert len(chunk_calls) >= 2
+    first, second = chunk_calls[0][1], chunk_calls[1][1]
+    assert "Kontekst całego wykładu" in first and "Słownik" in first
+    assert "Koniec poprzednich notatek" not in first                      # pierwszy fragment nie ma poprzednika
+    assert "Koniec poprzednich notatek" in second and "Koniec poprzedniego odcinka nagrania" in second
+    assert "Tematy już opisane" in second
+    assert "ZROZUMIAŁE" in ls.SYSTEM and "pełnymi zdaniami" in ls.SYSTEM
+
+
+def test_outline_is_cached_and_chunking_accounts_for_it(tmp_path):
+    (tmp_path / "transcript.json").write_text(json.dumps(_tl()), encoding="utf-8")
+    c1 = FakeClient()
+    ls.run_synthesis(tmp_path, CFG_LLM, "m", 4096, client=c1)
+    assert len([x for x in c1.calls if x[2].get("system") == ls.OUTLINE_SYSTEM]) == 1
+    for f in (tmp_path / "chunks").glob("*"):
+        f.unlink()                                                          # tylko fragmenty do ponownego wygenerowania
+    c2 = FakeClient()
+    ls.run_synthesis(tmp_path, CFG_LLM, "m", 4096, client=c2)
+    assert not [x for x in c2.calls if x[2].get("system") == ls.OUTLINE_SYSTEM]   # szkielet z outline.md
+    # fragmenty sa mniejsze niz bez szkieletu: budzet uwzglednia jego rozmiar
+    no_outline = dict(CFG_LLM, outline=False)
+    d = tmp_path / "plain"
+    d.mkdir()
+    (d / "transcript.json").write_text(json.dumps(_tl()), encoding="utf-8")
+    c3 = FakeClient()
+    ls.run_synthesis(d, no_outline, "m", 4096, client=c3)
+    assert not [x for x in c3.calls if x[2].get("system") == ls.OUTLINE_SYSTEM]
+    assert len(list((d / "chunks").glob("*.md"))) <= len(list((tmp_path / "chunks").glob("*.md")))
+
+
+def test_bad_outline_falls_back_to_plain_notes(tmp_path):
+    (tmp_path / "transcript.json").write_text(json.dumps(_tl(4)), encoding="utf-8")
+
+    class Short(FakeClient):
+        def generate(self, model, prompt, **kw):
+            if kw.get("system") == ls.OUTLINE_SYSTEM:
+                self.calls.append((model, prompt, kw))
+                return "za krotko"
+            return super().generate(model, prompt, **kw)
+    c = Short()
+    out = ls.run_synthesis(tmp_path, CFG_LLM, "m", 4096, client=c)
+    assert out.exists() and (tmp_path / "outline.md").read_text(encoding="utf-8") == ""
+    assert all("Kontekst całego wykładu" not in x[1] for x in c.calls if x[2].get("system") == ls.SYSTEM)
+
+
+def test_overview_and_tail_helpers():
+    items = [{"t": i, "kind": "Mowa", "text": "x" * 600} for i in range(40)]
+    ov = ls.build_overview(items, 1000)
+    assert ls.est_tokens(ov) <= 1500 and ov.count("[Mowa") == 40          # skrocone, ale obejmuja caly wyklad
+    md = "Pierwszy akapit.\n\nDrugi akapit o czyms dluzszym." + " x" * 400
+    t = ls.tail_notes(md, 300)
+    assert len(t) <= 300 and not t.startswith("Pierwszy")

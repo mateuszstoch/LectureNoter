@@ -28,7 +28,7 @@ STAGES = ["asr", "frames", "vlm", "llm"]
 OUTPUTS = {"asr": ["transcript.json"], "frames": ["frames_metadata.json"],
            "vlm": ["vision_context.json"], "llm": ["lecture_notes.md"]}
 # artefakty posrednie do usuniecia, gdy etap jest nieaktualny
-LEFTOVERS = {"asr": ["audio.wav"], "frames": ["frames"], "vlm": ["vision_context.jsonl"], "llm": ["chunks"]}
+LEFTOVERS = {"asr": ["audio.wav"], "frames": ["frames"], "vlm": ["vision_context.jsonl"], "llm": ["chunks", "outline.md"]}
 GPU_STAGES = {"asr", "vlm", "llm"}
 VIDEO_STAGES = {"asr", "frames"}  # tylko te etapy czytaja plik wideo; vlm i llm dzialaja na wynikach
 NO_VIDEO = "__brak_wideo__"      # nazwa zastepcza sciezki dla wykladu bez pliku wideo (np. zaimportowanego bez filmu)

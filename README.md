@@ -117,6 +117,15 @@ Generowanie ma dwa etapy: najpierw model planuje listę **różnych zagadnień**
 
 **Słabe strony:** opcja „Skup się na moich słabych stronach” układa nowy quiz głównie (do ~70%) z zagadnień, w których ostatnie odpowiedzi były błędne lub częściowe, na podstawie historii wszystkich quizów tego wykładu. Pytania są nowe, nie powtórką starych, a zagadnienie przestaje być „słabe”, gdy poprawnie odpowiesz na nie przy kolejnym podejściu. Opcja jest dostępna po rozwiązaniu quizu z błędami.
 
+### Zrozumiałość notatek
+
+Notatki powstają fragmentami, ale każdy fragment dostaje kontekst całości, żeby nie były urywane ani wyrwane z kontekstu:
+- **Szkielet wykładu** (`outline.md`): osobny pierwszy przebieg tworzy temat, przebieg i słownik kluczowych pojęć z definicjami; dostaje go każdy fragment.
+- **Ciągłość:** fragment widzi koniec poprzednich notatek i koniec poprzedniego odcinka nagrania (jako kontekst, bez przepisywania), więc kończy zaczęte wątki.
+- **Styl:** pełne zdania zamiast samych haseł, wyjaśnienie pojęć przy pierwszym użyciu, zachowane powiązania i przykłady. Temat opisany wcześniej jest przypominany jednym zdaniem zamiast całkowicie pomijany.
+
+Koszt to jedno dodatkowe wywołanie modelu i dłuższe prompty (etap notatek ok. 20–40% dłuższy). Szkielet można wyłączyć przez `llm.outline: false`. Po aktualizacji notatki istniejących wykładów trzeba wygenerować ponownie (etap „Notatki”); wersje edytowane ręcznie nie są nadpisywane.
+
 ### Jakość notatek
 
 Mały model potrafi zapętlić się w powtórzeniach. Generator to wykrywa: ponawia generowanie z inną temperaturą i karą za powtórzenia (do 2 razy), a w ostateczności wycina powtórzenia. Pętle w opisach tablicy i transkrypcji są usuwane przed syntezą, a zdublowane sekcje scalane. Gdy fragmenty trzeba było naprawić, zakładka Notatki pokazuje ostrzeżenie z propozycją ponownej generacji. Parametry: `llm.repeat_penalty`, `llm.loop_retries`.

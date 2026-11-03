@@ -93,7 +93,7 @@ def test_looped_heading_does_not_poison_following_chunks(tmp_path):
     """Regresja z prawdziwego dokumentu: zapetlony naglowek z 1. fragmentu trafial do listy 'tematy juz opisane'."""
     wd = timeline_workdir(tmp_path)
     c = Scripted([BAD, GOOD, GOOD, "Streszczenie wykładu o maszynach Turinga i ich definicjach formalnych."])
-    cfg = {"chunk_minutes": 10, "num_predict": 300, "temperature": 0.3, "loop_retries": 0}
+    cfg = {"outline": False, "chunk_minutes": 10, "num_predict": 300, "temperature": 0.3, "loop_retries": 0}
     ls.run_synthesis(wd, cfg, "m", 4096, client=c)
     second_prompt = c.calls[1][0]
     assert "Tematy już opisane" in second_prompt and "relacji relacji" not in second_prompt
@@ -107,7 +107,7 @@ def test_looped_heading_does_not_poison_following_chunks(tmp_path):
 def test_looped_summary_is_omitted(tmp_path):
     wd = timeline_workdir(tmp_path, 1)
     c = Scripted([GOOD, "Wykład dotyczy " + "relacji " * 100])
-    cfg = {"chunk_minutes": 10, "num_predict": 300, "temperature": 0.3}
+    cfg = {"outline": False, "chunk_minutes": 10, "num_predict": 300, "temperature": 0.3}
     ls.run_synthesis(wd, cfg, "m", 4096, client=c)
     notes = (wd / "lecture_notes.md").read_text(encoding="utf-8")
     assert "## Podsumowanie" not in notes and "relacji relacji" not in notes and "## Spis treści" in notes

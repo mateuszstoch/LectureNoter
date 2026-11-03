@@ -7,14 +7,19 @@ from pathlib import Path
 from loguru import logger
 
 from io_utils import atomic_write_json, fmt_ts, read_json
-from ollama_client import OllamaClient
+from ollama_client import OllamaClient, OllamaError
 from textguard import clean_heading, collapse_loops, has_loop
 
 SYSTEM = (
     "Jesteś asystentem akademickim. Otrzymujesz fragment chronologicznej osi wykładu: transkrypcję mowy "
     "([Mowa]) i odczytany tekst z tablicy/slajdów ([Tablica]). Twoim zadaniem jest stworzyć z niego "
-    "kompleksową, zorganizowaną notatkę w formacie Markdown po polsku. Używaj nagłówków (##, ###) i list "
-    "punktowych. Wzory matematyczne zapisuj w LaTeX w blokach $$ ... $$. Ignoruj błędy rozpoznawania mowy "
+    "kompleksową, zorganizowaną notatkę w formacie Markdown po polsku. Używaj nagłówków (##, ###). "
+    "NOTATKI MAJĄ BYĆ ZROZUMIAŁE DLA OSOBY, KTÓRA NIE BYŁA NA WYKŁADZIE: piszesz pełnymi zdaniami, a nie samymi hasłami; "
+    "listy punktowe stosuj tylko do wyliczeń i kroków. Każde pojęcie, symbol i skrót przy pierwszym użyciu krótko wyjaśnij "
+    "(skorzystaj z kontekstu całego wykładu i słownika, jeśli je dostałeś). Zachowuj powiązania: dlaczego coś jest ważne, "
+    "co z czego wynika, jak łączy się z poprzednim tematem, oraz przykłady podane na wykładzie. Nie urywaj myśli i nie wyrywaj "
+    "zdań z kontekstu: jeśli odcinek zaczyna się w połowie wywodu, dokończ go na podstawie kontekstu poprzedniego odcinka. "
+    "Wzory matematyczne zapisuj w LaTeX w blokach $$ ... $$. Ignoruj błędy rozpoznawania mowy "
     "i wyciągaj sens; przy nazwach własnych, symbolach i wzorach ufaj bardziej tablicy niż mowie. "
     "Opisy tablicy bywają niedokładne (pismo odręczne): nie zgaduj, oznacz wątpliwe miejsca jako [?]. "
     "Nie dodawaj faktów spoza materiału. Dodawaj znaczniki czasu [HH:MM:SS] przy kluczowych tematach. "
@@ -27,10 +32,19 @@ SYSTEM = (
     "Pisz wyłącznie po polsku (nazwy i terminy angielskie dopuszczalne), bez znaków chińskich. "
     "Nie dodawaj komentarzy o samej notatce (żadnych 'Uwagi', 'Ten fragment zawiera...'), "
     "nie numeruj fragmentów i nie pisz nagłówków typu 'Fragment 3'. "
-    "Każdy temat opisuj tylko raz: jeśli został już opisany wcześniej (lista tematów poniżej), pomiń go "
-    "lub dodaj wyłącznie nowe informacje. "
+    "Sekcji o temacie opisanym już wcześniej (lista tematów poniżej) nie powtarzaj: jeśli korzystasz z takiego pojęcia, "
+    "przypomnij je jednym zdaniem w treści i dodaj tylko nowe informacje. Materiał oznaczony jako kontekst służy tylko do "
+    "zrozumienia: nie przepisuj go do notatki. "
     "Nigdy nie powtarzaj w kółko tego samego słowa, frazy ani zdania. Jeśli nie masz już nic do dodania, po prostu "
     "zakończ sekcję. Nagłówki mają być krótkie (do ok. 8 słów)."
+)
+OUTLINE_SYSTEM = (
+    "Na podstawie przeglądu nagrania wykładu (mowa i tablica) przygotuj po polsku krótki szkielet wykładu w Markdown, "
+    "używany jako kontekst przy pisaniu notatek. Zachowaj dokładnie trzy części: "
+    "**Temat:** 1-2 zdania o czym jest wykład i jaki ma cel; "
+    "**Przebieg:** 4-8 punktów w kolejności, w jakiej poruszano tematy; "
+    "**Słownik:** 8-15 kluczowych pojęć, symboli i skrótów, każde z jednozdaniową definicją, taką jak na wykładzie. "
+    "Korzystaj wyłącznie z materiału, pomijaj elementy interfejsu programu, nie zgaduj, pisz tylko po polsku bez znaków chińskich."
 )
 SUMMARY_SYSTEM = ("Na podstawie listy nagłówków notatek z wykładu napisz po polsku krótkie (5-8 zdań) "
                   "podsumowanie tematyki wykładu. Nie dodawaj informacji spoza nagłówków. "
@@ -81,6 +95,51 @@ def build_timeline(transcript, vision):
 
 def render(item):
     return f"[{fmt_ts(item['t'])}] [{item['kind']}]: {item['text']}"
+
+
+CONTEXT_TOKENS = 700  # zapas w prompcie na koniec poprzednich notatek i poprzedniego odcinka
+
+
+def build_overview(items, budget_tokens):
+    """Przeglad calego wykladu mieszczacy sie w budzecie tokenow: elementy osi sa skracane rowno, wiec obejmuje caly przebieg."""
+    rendered = [render(x) for x in items]
+    if sum(est_tokens(r) for r in rendered) <= budget_tokens:
+        return "\n".join(rendered)
+    per = max(80, budget_tokens * 3 // max(1, len(rendered)))
+    return "\n".join(r[:per] for r in rendered)
+
+
+def build_outline(client, model, items, num_ctx, workdir, retries=1):
+    """Szkielet wykladu (temat, przebieg, slownik pojec) dla kazdego fragmentu notatek. Zapisany w outline.md (wznowienie
+    pomija ponowne generowanie). Zwraca tekst albo '' (wtedy notatki powstaja bez szkieletu)."""
+    path = Path(workdir) / "outline.md"
+    if path.exists():
+        return path.read_text(encoding="utf-8")
+    budget = max(1000, num_ctx - 900 - est_tokens(OUTLINE_SYSTEM) - 300)
+    prompt = "# Przegląd nagrania wykładu\n" + build_overview(items, budget)
+    opts = {"num_ctx": num_ctx, "num_predict": 800, "temperature": 0.2, "repeat_penalty": 1.1, "repeat_last_n": 256}
+    try:
+        text, _, bad = generate_checked(client, model, prompt, OUTLINE_SYSTEM, opts, retries, "szkielet wykładu")
+    except OllamaError as e:
+        logger.warning(f"szkielet wykladu pominiety: {e}")
+        return ""
+    if bad or len(text) < 120:
+        logger.warning("szkielet wykladu niewiarygodny: notatki powstana bez niego")
+        path.write_text("", encoding="utf-8")  # znacznik: wznowienie nie zmieni podzialu na fragmenty
+        return ""
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+    return text
+
+
+def tail_notes(md, max_chars=700):
+    """Koniec poprzednich notatek (od poczatku akapitu), zeby kolejny fragment mogl dokonczyc watek."""
+    if not md or len(md) <= max_chars:
+        return (md or "").strip()
+    cut = md[-max_chars:]
+    nl = cut.find("\n")
+    return (cut[nl + 1:] if 0 <= nl < max_chars // 2 else cut).strip()
 
 
 def chunk_timeline(items, token_budget, max_minutes):
@@ -239,9 +298,6 @@ def run_synthesis(workdir, cfg, model, num_ctx, client=None, progress=None):
     items = build_timeline(transcript, vision)
     if not items:
         raise RuntimeError("brak danych wejsciowych (transkrypt i opisy tablicy sa puste)")
-    budget = num_ctx - cfg["num_predict"] - est_tokens(SYSTEM) - 500
-    chunks = chunk_timeline(items, budget, cfg["chunk_minutes"])
-    logger.info(f"LLM: {len(items)} elementow osi, {len(chunks)} fragmentow, model {model}, num_ctx {num_ctx}")
     cdir = workdir / "chunks"
     cdir.mkdir(exist_ok=True)
     client.check()
@@ -250,10 +306,19 @@ def run_synthesis(workdir, cfg, model, num_ctx, client=None, progress=None):
     base_opts = {"num_ctx": num_ctx, "num_predict": cfg["num_predict"], "temperature": cfg["temperature"],
                  "repeat_penalty": cfg.get("repeat_penalty", 1.1), "repeat_last_n": 256, "top_k": 40, "top_p": 0.9}
     retries = cfg.get("loop_retries", 2)
-    steps = len(chunks) + 1  # fragmenty + podsumowanie
-    if progress:
-        progress.update(0, steps, "notatki")
+    outline, chunks, steps = "", [], 1
     try:
+        if cfg.get("outline", True):  # szkielet calego wykladu jako kontekst dla kazdego fragmentu
+            if progress:
+                progress.update(0, 1, "szkielet wykładu")
+            outline = build_outline(client, model, items, num_ctx, workdir, retries=1)
+        outline_txt = f"# Kontekst całego wykładu (tylko do zrozumienia, nie przepisuj)\n{outline}\n\n" if outline else ""
+        budget = max(800, num_ctx - cfg["num_predict"] - est_tokens(SYSTEM) - 500 - est_tokens(outline_txt) - CONTEXT_TOKENS)
+        chunks = chunk_timeline(items, budget, cfg["chunk_minutes"])
+        logger.info(f"LLM: {len(items)} elementow osi, {len(chunks)} fragmentow, model {model}, num_ctx {num_ctx}, szkielet: {'tak' if outline else 'nie'}")
+        steps = len(chunks) + 1  # fragmenty + podsumowanie
+        if progress:
+            progress.update(0, steps, "notatki")
         for i, ch in enumerate(chunks, 1):
             path = cdir / f"chunk_{i:02d}.md"
             meta_path = cdir / f"chunk_{i:02d}.json"
@@ -266,10 +331,18 @@ def run_synthesis(workdir, cfg, model, num_ctx, client=None, progress=None):
                 continue
             logger.info(f"LLM fragment {i}/{len(chunks)} [{fmt_ts(ch[0]['t'])}-{fmt_ts(ch[-1]['t'])}]")
             covered = topic_list(notes)
-            covered_txt = ("Tematy już opisane we wcześniejszych notatkach (nie powtarzaj ich): "
-                           + "; ".join(covered) + "\n\n") if covered else ""
-            prompt = (f"{covered_txt}Poniżej materiał z kolejnego odcinka wykładu. "
-                      f"Napisz notatki tylko z tego materiału, bez wstępu i bez podsumowania całości.\n\n"
+            covered_txt = ("Tematy już opisane we wcześniejszych notatkach: " + "; ".join(covered) + "\n\n") if covered else ""
+            prev_txt = ""
+            if i > 1:  # ciaglosc: koniec poprzednich notatek i koniec poprzedniego odcinka (tylko do zrozumienia)
+                prev_notes = tail_notes(notes[-1]) if notes else ""
+                prev_raw = "\n".join(render(x) for x in chunks[i - 2][-3:])[-1200:]
+                if prev_notes:
+                    prev_txt += f"# Koniec poprzednich notatek (kontynuuj płynnie, nie powtarzaj)\n{prev_notes}\n\n"
+                if prev_raw:
+                    prev_txt += f"# Koniec poprzedniego odcinka nagrania (kontekst, nie notuj ponownie)\n{prev_raw}\n\n"
+            prompt = (f"{outline_txt}{covered_txt}{prev_txt}# Materiał do notatek (kolejny odcinek wykładu)\n"
+                      "Napisz zrozumiałe notatki tylko z tego materiału, bez wstępu i bez podsumowania całości. "
+                      "Zacznij od najważniejszego pojęcia odcinka i wyjaśnij je, zanim przejdziesz do szczegółów.\n\n"
                       + "\n".join(render(x) for x in ch))
             md, attempts, degraded = generate_checked(client, model, prompt, SYSTEM, base_opts, retries, f"fragment {i}")
             md = shift_headings(md)
