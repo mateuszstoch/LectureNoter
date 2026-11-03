@@ -216,6 +216,9 @@ function openHit(res, hit) {
   if (hit.kind === "notes") {
     window.pendingNotesFocus = { videoId: res.video_id, terms: libView.results.terms, heading: hit.heading };
     location.hash = `#/video/${res.video_id}/notes`;
+  } else if (hit.kind === "quiz") {
+    window.pendingQuizOpen = { videoId: res.video_id, quizId: hit.quiz_id };
+    location.hash = `#/video/${res.video_id}/quiz`;
   } else if (hit.t != null) {
     openContextDialog(res.video_id, hit.t);
   } else {
@@ -229,11 +232,13 @@ function resultsView() {
   if (r.error) return h("div", { class: "errline" }, r.error);
   if (!r.results.length) {
     return h("div", { class: "empty" }, `Brak wyników dla „${r.query}”.`,
-      h("div", { class: "small", style: "margin-top:8px" }, "Spróbuj innej formy słowa (wyszukiwarka rozpoznaje odmiany), mniejszej liczby słów albo frazy w cudzysłowie."));
+      h("div", { class: "small", style: "margin-top:8px" }, "Spróbuj innej formy słowa (wyszukiwarka rozpoznaje odmiany), mniejszej liczby słów albo frazy w cudzysłowie.",
+        r.scope && r.scope !== "all" ? " Zakres jest zawężony prefiksem: usuń pierwszy znak (@, # lub ?), aby szukać wszędzie." : ""));
   }
   const kindName = { notes: "Notatki", transcript: "Mowa", board: "Tablica", title: "Tytuł" };
   return h("div", {},
-    h("div", { class: "meta", style: "margin-bottom:10px" }, `${r.total_hits} trafień w ${r.results.length} ${r.results.length === 1 ? "wykładzie" : "wykładach"}`),
+    h("div", { class: "meta", style: "margin-bottom:10px" }, `${r.total_hits} trafień w ${r.results.length} ${r.results.length === 1 ? "wykładzie" : "wykładach"}`,
+      r.scope && r.scope !== "all" ? ` · szukam ${{ titles: SEARCH_SCOPES["@"], notes: SEARCH_SCOPES["#"], quizzes: SEARCH_SCOPES["?"] }[r.scope]}` : ""),
     h("div", { class: "results" }, r.results.map((res) => h("article", { class: "result" },
       h("div", { class: "result-head" },
         h("a", { class: "vtitle small-title", href: `#/video/${res.video_id}` }, highlightNodes(res.title, r.terms)),
@@ -243,10 +248,14 @@ function resultsView() {
         h("span", { class: "hit-snippet" }, highlightNodes(hit.snippet, r.terms))))))));
 }
 
+// Prefiks zawęża zakres: @ tytuły wykładów, # notatki, ? quizy. Zapytanie bez prefiksu szuka wszędzie (poza quizami).
+const SEARCH_SCOPES = { "@": "tylko w tytułach wykładów", "#": "tylko w notatkach", "?": "tylko w quizach" };
+const searchBody = (q) => (SEARCH_SCOPES[q.trim()[0]] ? q.trim().slice(1) : q).trim();
+
 function onSearchInput(value) {
   libView.query = value;
   clearTimeout(libView.timer);
-  if (value.trim().length < 2) { libView.results = null; libView.searching = false; libView.seq++; updateLibrary(); return; }
+  if (searchBody(value).length < 2) { libView.results = null; libView.searching = false; libView.seq++; updateLibrary(); return; }
   libView.searching = true;
   libView.results = libView.results || null;
   updateLibrary();
@@ -255,7 +264,7 @@ function onSearchInput(value) {
 
 async function runSearch() {
   const q = libView.query.trim();
-  if (q.length < 2) return;
+  if (searchBody(q).length < 2) return;
   const seq = ++libView.seq;
   const folder = libView.onlyHere ? currentFolderId() : null;
   let res;
@@ -269,7 +278,7 @@ async function runSearch() {
 // ---------- widok biblioteki ----------
 function mountLibrary(fid) {
   libView.mounted = fid;
-  const search = h("input", { type: "search", id: "libsearch", class: "search", placeholder: "Szukaj w tytułach, notatkach, transkrypcjach i tablicach…",
+  const search = h("input", { type: "search", id: "libsearch", class: "search", placeholder: "Szukaj w tytułach, notatkach, transkrypcjach i tablicach…  (@ tytuły · # notatki · ? quizy)",
     "aria-label": "Szukaj we wszystkich wykładach", autocomplete: "off", oninput: (e) => onSearchInput(e.target.value) });
   search.value = libView.query;
   search.addEventListener("keydown", (e) => { if (e.key === "Escape") { search.value = ""; onSearchInput(""); } });
@@ -288,6 +297,7 @@ function mountLibrary(fid) {
           h("button", { class: "primary", onclick: openAddDialog }, "Dodaj nagranie"))),
       h("div", { class: "searchbar" }, search, sort),
       only,
+      h("div", { class: "small muted", id: "libhint", style: "margin:-4px 0 8px" }, "Wskazówka: ", h("code", {}, "@"), " szuka tylko w tytułach wykładów, ", h("code", {}, "#"), " tylko w notatkach, ", h("code", {}, "?"), " tylko w quizach."),
       h("div", { id: "libcrumbs" }),
       h("div", { class: "layout", style: "margin-top:18px" }, h("div", { id: "libmain" }), h("div", { id: "libqueue" }))));
 }
@@ -303,7 +313,7 @@ function updateLibrary() {
   if (libView.dragging || !$("#libroot")) return; // nie niszcz elementów w trakcie przeciągania
   const fid = currentFolderId();
   const folder = fid ? folderById(fid) : null;
-  const searching = libView.query.trim().length >= 2;
+  const searching = searchBody(libView.query).length >= 2;
   $("#libtitle").textContent = folder ? folder.name : "Wykłady";
   $("#libsub").textContent = folder ? "" : "Nagrania zamieniane w notatki, lokalnie na tym komputerze.";
   $("#libsub").hidden = !!folder;

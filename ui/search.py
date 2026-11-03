@@ -7,8 +7,12 @@ from pathlib import Path
 from io_utils import fmt_ts, read_json
 from llm_synthesis import dedupe_board, merge_speech
 from ui import notes as notes_mod
+from ui.quiz import QuizStore
 from ui.retrieval import BM25, split_notes, stem, tokens
 
+# Prefiks zapytania zawęża zakres: @ tylko tytuły wykładów (z folderami), # tylko notatki, ? tylko quizy (pytania, odpowiedzi, tytuły)
+SCOPES = {"@": ("titles", {"title"}), "#": ("notes", {"notes"}), "?": ("quizzes", {"quiz"})}
+DEFAULT_KINDS = {"title", "notes", "transcript", "board"}
 TITLE_BOOST = 3.0
 ALL_TERMS_BOOST = 1.5
 MAX_HITS_PER_LECTURE = 5
@@ -55,7 +59,7 @@ class SearchIndex:
     # --- dokumenty jednego wykladu (cache wg plikow) ---
     def _signature(self, wd):
         sig = []
-        for name in (notes_mod.GENERATED, notes_mod.EDITED, "transcript.json", "vision_context.json"):
+        for name in (notes_mod.GENERATED, notes_mod.EDITED, "transcript.json", "vision_context.json", "quizzes.json"):
             p = wd / name
             if p.exists():
                 st = p.stat()
@@ -81,6 +85,17 @@ class SearchIndex:
         vision = read_json(wd / "vision_context.json", []) or []
         for it in dedupe_board(vision):
             docs.append({"kind": "board", "label": f"Tablica {fmt_ts(it['t'])}", "t": it["t"], "text": it["text"]})
+        for quiz in QuizStore(wd).all():
+            if quiz.get("status") != "ready":
+                continue
+            qtitle = quiz.get("title") or "Quiz"
+            for i, q in enumerate(quiz.get("questions", []), 1):
+                if not isinstance(q, dict):
+                    continue
+                parts = [q.get("question", ""), q.get("topic") or "", q.get("term") or "", q.get("explanation") or "", q.get("model_answer") or ""]
+                parts += [o.get("text", "") for o in q.get("options", []) if isinstance(o, dict)]
+                docs.append({"kind": "quiz", "label": f"Quiz · {qtitle} · pytanie {i}", "quiz_id": quiz.get("id"),
+                             "text": " ".join(p for p in parts if p), "body": q.get("question", "")})
         for d in docs:
             d["tokens"] = tokens(d["text"])
             d["low"] = " ".join(d["text"].lower().split())
@@ -115,9 +130,13 @@ class SearchIndex:
 
     def search(self, q, folder=None, limit_lectures=30):
         q = (q or "").strip()
+        scope, kinds = "all", DEFAULT_KINDS
+        if q[:1] in SCOPES:
+            scope, kinds = SCOPES[q[0]]
+            q = q[1:].strip()
         phrases, toks = parse_query(q)
         if len(q) < 2 or not toks:
-            return {"query": q, "terms": [], "results": [], "total_hits": 0}
+            return {"query": q, "scope": scope, "terms": [], "results": [], "total_hits": 0}
         with self._lock:
             docs, bm, info = self._corpus()
             allowed = None
@@ -127,7 +146,7 @@ class SearchIndex:
             tokset = set(toks)
             per_lecture = {}
             for d, sc in zip(docs, scores):
-                if sc <= 0:
+                if sc <= 0 or d["kind"] not in kinds:
                     continue
                 vid = d["vid"]
                 if allowed is not None and info[vid]["folder"] not in allowed:
@@ -154,11 +173,13 @@ class SearchIndex:
                         h["t"] = d["t"]
                     if "heading" in d:
                         h["heading"] = d["heading"]
+                    if "quiz_id" in d:
+                        h["quiz_id"] = d["quiz_id"]
                     out.append(h)
                 results.append({"video_id": vid, "title": info[vid]["title"], "folder": info[vid]["folder"],
                                 "folder_path": info[vid]["folder_path"], "title_match": title_hit,
                                 "score": hits[0][0] + 0.15 * sum(s for s, _ in hits[1:4]),
                                 "hits": out, "hit_count": len(hits)})
             results.sort(key=lambda r: -r["score"])
-            return {"query": q, "terms": sorted(set(toks)), "results": results[:limit_lectures],
+            return {"query": q, "scope": scope, "terms": sorted(set(toks)), "results": results[:limit_lectures],
                     "total_hits": sum(r["hit_count"] for r in results)}

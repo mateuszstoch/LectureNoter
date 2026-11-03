@@ -374,4 +374,9 @@ function mountQuizTab(container, videoId) {
   renderList();
   loadList();
   if (window.pendingQuizTopic && window.pendingQuizTopic.videoId === videoId) go({ name: "new" });
+  if (window.pendingQuizOpen && window.pendingQuizOpen.videoId === videoId) {   // przejście z wyszukiwarki (?)
+    const id = window.pendingQuizOpen.quizId;
+    window.pendingQuizOpen = null;
+    openQuiz(id);
+  }
 }
