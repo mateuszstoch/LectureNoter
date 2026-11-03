@@ -230,7 +230,8 @@ dialog h2 { font: 600 22px var(--serif); text-transform: none; letter-spacing: -
 .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 10px 16px; flex-wrap: wrap; margin-bottom: 22px; padding-bottom: 14px; border-bottom: 1px solid var(--rule); }
 .btn { display: inline-block; }
 .notes-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 56px; align-items: start; }
-/* szerokość tekstu notatek (przycisk w pasku) i schowany spis treści */
+/* szerokość tekstu notatek (przycisk w pasku) i schowany spis treści; tekst wyśrodkowany w swojej kolumnie */
+.notes-layout .notes-body { margin-left: auto; margin-right: auto; width: 100%; }
 .notes-layout[data-width=wide] .notes-body { max-width: 100ch; }
 .notes-layout[data-width=full] .notes-body { max-width: none; }
 .notes-layout.no-toc { grid-template-columns: minmax(0, 1fr); }
