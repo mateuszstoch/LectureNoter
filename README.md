@@ -92,6 +92,7 @@ Spodziewaj się czasu wielokrotnie dłuższego niż na GPU: transkrypcja zbliżo
 - *Notatki:* Markdown z wzorami (KaTeX, offline), spis treści, wyszukiwanie, klikalne znaczniki czasu, edycja z historią wersji (wersja edytowana nie jest nadpisywana przy regeneracji). Eksport do Markdown, PDF (drukowanie przeglądarki) i Worda (wymaga `pandoc`).
 - *Materiały:* klatki z tablicy i przeszukiwalny transkrypt.
 - *Czat:* pytania do notatek, transkryptu i odczytu tablicy; odpowiedzi strumieniowane, rozmowy zapisywane i eksportowalne (Markdown, PDF), model do wyboru spośród zainstalowanych w Ollamie.
+- *Podpowiedzi z wykładu:* przy generowaniu notatek model zapisuje słowa kluczowe i pytania pomocnicze (`suggestions.json`). Czat pokazuje je jako klikalne pojęcia i pytania (wstawiają się do pola, które możesz poprawić), a formularz quizu podpowiada pojęcia przy wyborze obszaru. Dla starszych wykładów podpowiedzi powstają z nagłówków notatek, a link „Wygeneruj lepsze modelem” tworzy je na żądanie (także po dużej edycji notatek).
 - *Quiz:* patrz niżej.
 
 Czat, quizy i przetwarzanie nie używają GPU jednocześnie: w czasie zadania są niedostępne, a bezczynny model jest zwalniany przed jego startem.

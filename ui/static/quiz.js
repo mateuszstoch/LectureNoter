@@ -94,9 +94,10 @@ function mountQuizTab(container, videoId) {
 
   // ---------- nowy quiz ----------
   async function renderNew() {
-    let scopes = [], weak = [];
+    let scopes = [], weak = [], sugg = { keywords: [] };
     try { scopes = await api(`/api/videos/${videoId}/quiz-scopes`); } catch (_) { /* brak notatek: tylko temat */ }
     try { weak = await api(`/api/videos/${videoId}/quiz-weak`); } catch (_) { /* brak historii */ }
+    sugg = await fetchSuggestions(videoId);
     let type = "auto";
     const allowed = new Set(["term", "single", "multi", "open"]);
     const allowedBox = h("div", { class: "row small", style: "gap:14px;margin-top:8px;flex-wrap:wrap" });
@@ -115,7 +116,9 @@ function mountQuizTab(container, videoId) {
     paintTypes();
     paintAllowed();
     const count = h("input", { type: "number", min: "1", max: "30", value: "10", style: "width:80px", "aria-label": "Liczba pytań" });
-    const topic = h("input", { type: "text", placeholder: "np. maszyna Turinga albo problemy NP-zupełne", style: "width:100%", "aria-label": "Obszar" });
+    const topic = h("input", { type: "text", placeholder: sugg.keywords.length ? `np. ${sugg.keywords.slice(0, 2).join(" albo ")}` : "wpisz zagadnienie z wykładu", style: "width:100%", "aria-label": "Obszar" });
+    const kwChips = sugg.keywords.length ? h("div", { class: "row sugg-kw", style: "margin-top:6px" }, h("span", { class: "muted small" }, "Pojęcia z wykładu:"),
+      sugg.keywords.map((k) => h("button", { class: "small", type: "button", onclick: () => { topic.value = topic.value.trim() ? `${topic.value.trim()}, ${k}` : k; topic.focus(); } }, k))) : null;
     const title = h("input", { type: "text", placeholder: "(opcjonalnie) własna nazwa", style: "width:100%", "aria-label": "Nazwa quizu" });
     const model = h("select", { "aria-label": "Model" });
     const installed = ((state.system && state.system.ollama && state.system.ollama.installed) || []);
@@ -144,7 +147,7 @@ function mountQuizTab(container, videoId) {
         h("div", { class: "field-label" }, "Typ pytań"), typeBox, allowedBox,
         h("div", { class: "field-label" }, "Liczba pytań"), count,
         h("div", { class: "field-label" }, "Obszar wykładu ", h("span", { class: "muted small" }, "(puste = cały wykład)")),
-        topic,
+        topic, kwChips,
         scopes.length ? h("details", { style: "margin-top:8px" }, h("summary", { class: "small" }, `Wybierz sekcje notatek (${scopes.length})`),
           h("div", { class: "quiz-scopes" }, scopes.map((s, i) => h("label", { class: "row small", style: "gap:8px" }, boxes[i], s)))) : null,
         h("label", { class: "row", style: "gap:8px;margin-top:12px" }, adaptive,

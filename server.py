@@ -34,6 +34,7 @@ from main import STAGES
 from ollama_client import OllamaClient, apply_profile, has_cuda, pick_profile, total_vram_gb, vram_used_gb
 from ui import materials, notes as notes_mod
 from ui.chat import ChatBusy, ChatError, ChatService, ChatStore, export_markdown
+import suggestions as sugg
 from ui.quiz import QuizError, QuizService
 from starlette.background import BackgroundTask
 
@@ -634,6 +635,41 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
                     pass  # generator jeszcze w trakcie: zakonczy sie sam po zobaczeniu `cancel`
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    # --- podpowiedzi z wykladu (slowa kluczowe, pytania do czatu) ---
+    def notes_text(vid):
+        try:
+            return notes_mod.get_active(wd_of(vid))["md"]
+        except notes_mod.NotesError:
+            return ""
+
+    @app.get("/api/videos/{vid}/suggestions")
+    def suggestions_get(vid: str):
+        return sugg.load(wd_of(vid), notes_text(vid))
+
+    @app.post("/api/videos/{vid}/suggestions")
+    def suggestions_generate(vid: str):
+        """Generuje podpowiedzi modelem (dla starszych wykladow lub po edycji notatek); wymaga wolnego modelu."""
+        wd = wd_of(vid)
+        md = notes_text(vid)
+        if not md:
+            raise HTTPException(400, "Brak notatek: najpierw przetwórz film.")
+        model = chat.default_model()
+        try:
+            if model not in ollama.installed_models():
+                raise HTTPException(400, f"Model '{model}' nie jest zainstalowany: uruchom `ollama pull {model}`.")
+            with chat.session(vid, model):
+                data = sugg.generate(ollama, model, md, chat.num_ctx())
+        except ChatBusy as e:
+            raise HTTPException(409, str(e))
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(502, f"Nie udało się wygenerować podpowiedzi: {e}")
+        if not data:
+            raise HTTPException(502, "Model nie zwrócił użytecznych podpowiedzi. Spróbuj ponownie.")
+        sugg.save(wd, data, model)
+        return sugg.load(wd, md)
 
     # --- quizy ---
     def quiz_guard(fn):

@@ -377,3 +377,8 @@ pre.vlm { white-space: pre-wrap; background: var(--sunk); padding: 8px 12px; fon
 .quiz-result { text-align: center; }
 @media (max-width: 600px) { .qcard { padding: 12px; } .qtext { font-size: 16px; } }
 .quiz-types .opt { border: 1px solid var(--rule); padding: 10px 12px; margin: 0; background: var(--paper); border-radius: 2px; }
+.sugg { margin: 8px 0; border: 1px solid var(--rule); background: var(--surface); padding: 6px 10px; border-radius: 2px; }
+.sugg > summary { cursor: pointer; }
+.sugg-kw { gap: 6px; margin: 8px 0 4px; flex-wrap: wrap; }
+.sugg-q { display: grid; gap: 6px; margin-top: 8px; }
+.sugg-q button { text-align: left; }

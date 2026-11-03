@@ -1,8 +1,17 @@
 "use strict";
 // Zakładka "Czat": rozmowa z lokalnym LLM o notatkach i transkrypcie jednego filmu. Korzysta z helperów app.js i notes.js.
 
+// Podpowiedzi z wykładu (słowa kluczowe i pytania): zapisane przez model albo, gdy ich brak, z nagłówków notatek.
+async function fetchSuggestions(videoId) {
+  try { return await api(`/api/videos/${videoId}/suggestions`); } catch (_) { return { keywords: [], questions: [], source: "none" }; }
+}
+async function regenerateSuggestions(videoId) {
+  return api(`/api/videos/${videoId}/suggestions`, { method: "POST", body: {} });
+}
+
 function mountChatTab(container, videoId) {
   let chats = [], current = null, streaming = null; // streaming: { controller }
+  let sugg = { keywords: [], questions: [], source: "none" };
   const MODEL_KEY = "lecturenoter.chatModel";
   const root = h("div", { class: "chat-layout" });
   container.replaceChildren(root);
@@ -18,6 +27,7 @@ function mountChatTab(container, videoId) {
   const modelSel = h("select", { "aria-label": "Model czatu", onchange: () => localStorage.setItem(MODEL_KEY, modelSel.value) });
   const statusEl = h("span", { class: "muted small" });
   const notice = h("div", { class: "banner warn", hidden: true, style: "margin:0 0 8px" });
+  const suggBox = h("details", { class: "sugg" });
   const releaseBtn = h("button", { class: "small", title: "Rozładuj model czatu z pamięci GPU", onclick: releaseGpu }, "Zwolnij GPU");
   const mdLink = h("a", { class: "btn small", href: "#", download: "rozmowa.md", title: "Pobierz rozmowę jako Markdown" }, "Markdown");
   const pdfBtn = h("button", { class: "small", title: "Otwiera okno drukowania: wybierz „Zapisz jako PDF”", onclick: () => printChat() }, "PDF");
@@ -30,9 +40,25 @@ function mountChatTab(container, videoId) {
     h("div", { class: "row spread", style: "margin-bottom:8px" },
       h("div", { class: "row" }, h("span", { class: "muted small" }, "Model:"), modelSel),
       h("div", { class: "row" }, statusEl, releaseBtn, h("span", { class: "muted small" }, "Eksport:"), mdLink, pdfBtn)),
-    notice, msgBox,
+    notice, suggBox, msgBox,
     h("div", { class: "chat-form" }, input, h("div", { class: "row", style: "justify-content:flex-end" }, stopBtn, sendBtn)),
     h("div", { class: "muted small", style: "margin-top:6px" }, "Odpowiedzi opierają się na automatycznie wygenerowanych notatkach i transkrypcie (mogą zawierać błędy). Wszystko działa lokalnie."));
+
+  function paintSuggestions() {
+    const fill = (text) => { input.value = text; input.focus(); };
+    const has = sugg.keywords.length || sugg.questions.length;
+    suggBox.hidden = !has;
+    suggBox.replaceChildren(...kids(
+      h("summary", { class: "small muted" }, "Podpowiedzi z tego wykładu"),
+      sugg.keywords.length ? h("div", { class: "row sugg-kw" }, h("span", { class: "muted small" }, "Pojęcia:"),
+        sugg.keywords.map((k) => h("button", { class: "small", title: "Wstaw pytanie o to pojęcie", onclick: () => fill(`Wyjaśnij pojęcie: ${k}`) }, k))) : null,
+      sugg.questions.length ? h("div", { class: "sugg-q" }, sugg.questions.map((q) => h("button", { class: "small", title: "Wstaw pytanie", onclick: () => fill(q) }, q))) : null,
+      sugg.source !== "model" ? h("div", { class: "small muted", style: "margin-top:6px" }, "Podpowiedzi powstały z nagłówków notatek. ",
+        h("a", { href: "#", onclick: async (e) => {
+          e.preventDefault();
+          try { toast("Model układa podpowiedzi…"); sugg = await regenerateSuggestions(videoId); paintSuggestions(); renderMessages(); } catch (err) { toast(err.message); }
+        } }, "Wygeneruj lepsze modelem")) : null));
+  }
 
   function fillModels() {
     const sys = state.system;
@@ -158,12 +184,13 @@ function mountChatTab(container, videoId) {
     } else if (!current.messages.length) {
       msgBox.replaceChildren(h("div", { class: "empty" }, "Zadaj pytanie o ten wykład.",
         h("div", { class: "row", style: "margin-top:12px;gap:8px" },
-          ["Podsumuj ten wykład w punktach", "Jakie są najważniejsze definicje?", "Co było powiedziane o zaliczeniu?"].map((q) =>
+          (sugg.questions.length ? sugg.questions.slice(0, 4) : ["Podsumuj ten wykład w punktach", "Jakie są najważniejsze definicje?"]).map((q) =>
             h("button", { class: "small", onclick: () => { input.value = q; send(); } }, q)))));
     } else {
       msgBox.replaceChildren(...current.messages.map(bubble));
     }
     msgBox.scrollTop = msgBox.scrollHeight;
+    suggBox.open = !(current && current.messages.length); // rozwinięte, dopóki rozmowa jest pusta
     refreshControls();
     refreshExport();
   }
@@ -243,4 +270,5 @@ function mountChatTab(container, videoId) {
   renderSide();
   renderMessages();
   loadChats();
+  fetchSuggestions(videoId).then((d) => { sugg = d; paintSuggestions(); renderMessages(); });
 }

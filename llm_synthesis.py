@@ -294,6 +294,8 @@ def run_synthesis(workdir, cfg, model, num_ctx, client=None, progress=None):
                 summary = ""
         if progress:
             progress.update(steps, steps, "podsumowanie")
+        import suggestions  # slowa kluczowe i pytania pomocnicze do czatu/quizow (jeszcze na zaladowanym modelu)
+        suggestions.try_generate_and_save(client, model, workdir, "\n\n".join(notes), num_ctx)
     finally:
         try:
             client.unload(model)

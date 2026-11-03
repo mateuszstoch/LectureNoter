@@ -66,7 +66,7 @@ def test_synthesis_resume_and_unload(tmp_path):
     assert c.unloaded == ["m"]
     c2 = FakeClient()
     ls.run_synthesis(tmp_path, CFG_LLM, "m", 4096, client=c2)
-    assert len(c2.calls) == 1 and n_first > 2  # tylko podsumowanie; chunki z cache
+    assert len(c2.calls) == 2 and n_first > 3  # tylko podsumowanie i podpowiedzi; chunki z cache
 
 
 def test_vlm_resume_and_unload(tmp_path):
