@@ -197,3 +197,58 @@ document.addEventListener("drop", (e) => {
   const f = e.dataTransfer.files[0];
   if (f) handleImportFile(f);
 });
+
+
+// ---------- napisy (.srt/.vtt) i slajdy (PDF) ----------
+async function uploadRaw(url, file) {
+  const r = await fetch(url, { method: "PUT", headers: { "X-LectureNoter": "1", "content-type": "application/octet-stream" }, body: file });
+  let d = null;
+  try { d = await r.json(); } catch (_) { /* brak treści */ }
+  if (!r.ok) throw new Error((d && typeof d.detail === "string" && d.detail) || `Błąd ${r.status}`);
+  return d;
+}
+
+async function openExtrasDialog(v) {
+  const subsMsg = h("div", { class: "small", style: "margin-top:6px" });
+  const slidesInfo = h("div", { class: "small muted", style: "margin-top:6px" }, "Ładowanie…");
+  const slidesMsg = h("div", { class: "small", style: "margin-top:6px" });
+  const subsInput = h("input", { type: "file", accept: ".srt,.vtt,text/vtt,application/x-subrip", "aria-label": "Plik z napisami" });
+  const pdfInput = h("input", { type: "file", accept: ".pdf,application/pdf", "aria-label": "Slajdy PDF" });
+
+  async function showSlides() {
+    try {
+      const d = await api(`/api/videos/${v.id}/slides`);
+      slidesInfo.replaceChildren(...kids(d.slides ? [`Dodane: ${d.slides.name} (${d.slides.pages} stron z tekstem). `,
+        h("a", { href: "#", onclick: async (e) => { e.preventDefault(); await api(`/api/videos/${v.id}/slides`, { method: "DELETE" }); showSlides(); } }, "Usuń")] : ["Brak slajdów."]));
+    } catch (e) { slidesInfo.textContent = e.message; }
+  }
+  subsInput.onchange = async () => {
+    const f = subsInput.files[0];
+    if (!f) return;
+    subsMsg.textContent = "Wczytuję…";
+    try {
+      const r = await uploadRaw(`/api/videos/${v.id}/subtitles`, f);
+      subsMsg.textContent = `Wczytano ${r.segments} napisów (do ${fmtDur(r.duration)}). Wygeneruj ponownie notatki, aby użyły nowego transkryptu.`;
+      await refresh();
+    } catch (e) { subsMsg.textContent = e.message; subsMsg.style.color = "var(--accent)"; }
+  };
+  pdfInput.onchange = async () => {
+    const f = pdfInput.files[0];
+    if (!f) return;
+    slidesMsg.textContent = "Przetwarzam PDF…";
+    try {
+      await uploadRaw(`/api/videos/${v.id}/slides?name=${encodeURIComponent(f.name)}`, f);
+      slidesMsg.textContent = "Dodano. Czat będzie korzystał ze slajdów; szkielet notatek uwzględni je po ponownym wygenerowaniu notatek.";
+      showSlides();
+    } catch (e) { slidesMsg.textContent = e.message; slidesMsg.style.color = "var(--accent)"; }
+  };
+  openDialog(h("h2", {}, "Napisy i slajdy"),
+    h("h3", { style: "font-size:14px;margin:6px 0 2px" }, "Napisy (.srt, .vtt)"),
+    h("p", { class: "small muted", style: "margin:0 0 6px" }, "Zastępują automatyczną transkrypcję (np. napisy z platformy wykładowej). Nadpisują istniejący transkrypt."),
+    subsInput, subsMsg,
+    h("h3", { style: "font-size:14px;margin:16px 0 2px" }, "Slajdy (PDF)"),
+    h("p", { class: "small muted", style: "margin:0 0 6px" }, "Materiał pomocniczy: tekst slajdów uzupełnia czat i pomaga w poprawnych nazwach i terminach w notatkach. Skany bez tekstu nie są obsługiwane."),
+    pdfInput, slidesMsg, slidesInfo,
+    h("div", { class: "actions" }, h("button", { onclick: closeDialog }, "Zamknij")));
+  showSlides();
+}

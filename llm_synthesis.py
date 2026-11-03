@@ -109,14 +109,18 @@ def build_overview(items, budget_tokens):
     return "\n".join(r[:per] for r in rendered)
 
 
-def build_outline(client, model, items, num_ctx, workdir, retries=1):
+def build_outline(client, model, items, num_ctx, workdir, retries=1, slides_text=""):
     """Szkielet wykladu (temat, przebieg, slownik pojec) dla kazdego fragmentu notatek. Zapisany w outline.md (wznowienie
     pomija ponowne generowanie). Zwraca tekst albo '' (wtedy notatki powstaja bez szkieletu)."""
     path = Path(workdir) / "outline.md"
     if path.exists():
         return path.read_text(encoding="utf-8")
     budget = max(1000, num_ctx - 900 - est_tokens(OUTLINE_SYSTEM) - 300)
-    prompt = "# Przegląd nagrania wykładu\n" + build_overview(items, budget)
+    slides_part = ""
+    if slides_text:  # slajdy (PDF) pomagaja z nazwami i terminami; krotszy przeglad nagrania robi dla nich miejsce
+        slides_part = "\n\n# Slajdy do wykładu (materiał pomocniczy)\n" + slides_text[:max(0, budget // 4) * 3]
+        budget = max(800, budget - est_tokens(slides_part))
+    prompt = "# Przegląd nagrania wykładu\n" + build_overview(items, budget) + slides_part
     opts = {"num_ctx": num_ctx, "num_predict": 800, "temperature": 0.2, "repeat_penalty": 1.1, "repeat_last_n": 256}
     try:
         text, _, bad = generate_checked(client, model, prompt, OUTLINE_SYSTEM, opts, retries, "szkielet wykładu")
@@ -311,7 +315,9 @@ def run_synthesis(workdir, cfg, model, num_ctx, client=None, progress=None):
         if cfg.get("outline", True):  # szkielet calego wykladu jako kontekst dla kazdego fragmentu
             if progress:
                 progress.update(0, 1, "szkielet wykładu")
-            outline = build_outline(client, model, items, num_ctx, workdir, retries=1)
+            sl = read_json(workdir / "slides.json", None)
+            slides_text = "\n".join(f"[Slajd {p['n']}] {p['text']}" for p in (sl or {}).get("pages", [])) if isinstance(sl, dict) else ""
+            outline = build_outline(client, model, items, num_ctx, workdir, retries=1, slides_text=slides_text)
         outline_txt = f"# Kontekst całego wykładu (tylko do zrozumienia, nie przepisuj)\n{outline}\n\n" if outline else ""
         budget = max(800, num_ctx - cfg["num_predict"] - est_tokens(SYSTEM) - 500 - est_tokens(outline_txt) - CONTEXT_TOKENS)
         chunks = chunk_timeline(items, budget, cfg["chunk_minutes"])

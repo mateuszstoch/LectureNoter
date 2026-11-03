@@ -9,7 +9,8 @@ from config_loader import resolve
 from io_utils import atomic_write_json, read_json
 from main import STAGES, PipelineOrchestrator
 
-VIDEO_EXT = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v"}
+VIDEO_EXT = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v",
+             ".mp3", ".wav", ".m4a", ".flac", ".ogg", ".opus", ".aac"}  # takze samo audio (bez tablicy)
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,80}$")
 
 
@@ -198,7 +199,8 @@ class Library:
         meta = read_json(wd / "meta.json", {})
         st = self.orchestrator(video_id).status()
         return {"id": video_id, "title": meta.get("title"), "created": meta.get("created"),
-                "duration": meta.get("duration"), "has_audio": meta.get("has_audio"),
+                "duration": meta.get("duration"), "has_audio": meta.get("has_audio"), "has_video": meta.get("has_video"),
+                "transcript_source": meta.get("transcript_source"),
                 "video_path": meta.get("video_path"), "profile": meta.get("profile"), "folder": meta.get("folder"),
                 "overall": st["overall"], "video_exists": st["video_exists"],
                 "stages": st["stages"], "error": st["run"].get("error")}

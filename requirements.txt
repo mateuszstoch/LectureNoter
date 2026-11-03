@@ -11,3 +11,4 @@ nvidia-cudnn-cu12==9.*; sys_platform == 'linux'
 fastapi
 uvicorn
 httpx
+pypdf

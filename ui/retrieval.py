@@ -94,12 +94,14 @@ def _times_in(question):
     return out
 
 
-def build_context(question, history, notes_md, transcript, vision, budget):
+def build_context(question, history, notes_md, transcript, vision, budget, slides=None):
     """Zwraca (tekst kontekstu, lista zrodel). `history`: lista {role, content} (bez biezacego pytania)."""
     prev_q = next((m["content"] for m in reversed(history) if m["role"] == "user"), "")
     prev_a = next((m["content"] for m in reversed(history) if m["role"] == "assistant"), "")[:300]
     q = tokens(question) * 2 + tokens(prev_q) + tokens(prev_a)
     sources, blocks = [], []
+    slide_budget = int(budget * 0.15) if slides else 0   # czesc budzetu na wazne strony slajdow (PDF)
+    budget -= slide_budget
 
     sections = split_notes(notes_md) if notes_md else []
     speech = merge_speech(transcript, window_s=75) if transcript else []
@@ -141,4 +143,10 @@ def build_context(question, history, notes_md, transcript, vision, budget):
     for it in pick(boards, board_budget, lambda x: x["text"]):
         blocks.append(f"[Tablica {fmt_ts(it['t'])}]\n{it['text']}")
         sources.append({"kind": "board", "label": f"Tablica {fmt_ts(it['t'])}", "t": it["t"]})
+    if slides and slide_budget > 100:
+        sc = BM25([tokens(p["text"]) for p in slides]).scores(q)
+        order = [p for v, p in sorted(zip(sc, slides), key=lambda x: -x[0]) if v > 0][:3]
+        for pg in _fit([{"title": f"Slajd {p['n']}", "text": p["text"], "n": p["n"]} for p in order], slide_budget, lambda x: x["text"]):
+            blocks.append(f"[Slajd {pg['n']}]\n{pg['text']}")
+            sources.append({"kind": "slides", "label": f"Slajd {pg['n']}"})
     return "\n\n".join(blocks), sources

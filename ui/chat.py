@@ -336,7 +336,10 @@ class ChatService:
             ctx, sources = self._global_context(question, history, chat.get("scope"), max(500, total - fixed))
         else:
             notes_md, transcript, vision = self._materials(wd)
-            ctx, sources = build_context(question, history, notes_md, transcript, vision, max(500, total - fixed))
+            from ui import slides as slides_mod
+            sl = slides_mod.load(wd)
+            ctx, sources = build_context(question, history, notes_md, transcript, vision, max(500, total - fixed),
+                                         slides=sl["pages"] if sl else None)
         system = f"{SYSTEM_CHAT}{SYSTEM_GLOBAL_EXTRA if is_global else ''}{summary_txt}\n\n# Fragmenty wykładu\n{ctx or '(brak materiałów)'}"
         return [{"role": "system", "content": system}, *history, {"role": "user", "content": question}], sources
 

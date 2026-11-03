@@ -18,11 +18,12 @@ def probe(video):
          "stream=codec_type,width,height:format=duration", "-of", "json", str(video)],
         capture_output=True, text=True, check=True).stdout
     info = json.loads(out)
-    v = next(s for s in info["streams"] if s["codec_type"] == "video")
+    v = next((s for s in info["streams"] if s["codec_type"] == "video"), None)  # brak = nagranie tylko audio
     return {
-        "width": int(v["width"]), "height": int(v["height"]),
+        "width": int(v["width"]) if v else 0, "height": int(v["height"]) if v else 0,
         "duration": float(info["format"]["duration"]),
         "has_audio": any(s["codec_type"] == "audio" for s in info["streams"]),
+        "has_video": v is not None,
     }
 
 

@@ -29,7 +29,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from config_loader import LiveConfig, resolve
 from diagnostics import hint_for
 from gpu_lock import GpuLock
-from io_utils import read_json
+from io_utils import atomic_write_json, read_json
 from main import STAGES
 from ollama_client import OllamaClient, apply_profile, has_cuda, pick_profile, total_vram_gb, vram_used_gb
 from ui import materials, notes as notes_mod
@@ -37,6 +37,7 @@ from ui.chat import GLOBAL, ChatBusy, ChatError, ChatService, ChatStore, export_
 import suggestions as sugg
 from ui import explain as explain_mod, glossary as gloss_mod, verify as verify_mod
 from ui import flashcards as fc_mod, health as health_mod, progress as progress_mod
+from ui import slides as slides_mod, subtitles as subs_mod
 from ui.quiz import QuizError, QuizService, QuizStore
 from starlette.background import BackgroundTask
 
@@ -757,6 +758,56 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
             gloss_mod.save(wd, terms, model)
         with_model(vid, run)
         return gloss_mod.load(wd)
+
+    # --- dodatkowe wejscia: napisy (.srt/.vtt) zamiast transkrypcji i slajdy (PDF) ---
+    def ensure_idle(vid):
+        wd = wd_of(vid)
+        if jm.has_active(vid) or is_live(read_run_state(wd)):
+            raise HTTPException(409, "Wykład jest w kolejce lub trwa jego przetwarzanie. Najpierw anuluj zadanie.")
+        return wd
+
+    @app.put("/api/videos/{vid}/subtitles")
+    async def subtitles_put(vid: str, request: Request):
+        require_header(request)
+        wd = ensure_idle(vid)
+        raw = await request.body()
+        if len(raw) > subs_mod.MAX_BYTES:
+            raise HTTPException(413, "Plik z napisami jest za duży.")
+        try:
+            segs = await asyncio.to_thread(lambda: subs_mod.parse(subs_mod.decode(raw)))
+        except subs_mod.SubtitleError as e:
+            raise HTTPException(400, str(e))
+        atomic_write_json(str(wd / "transcript.json"), segs)
+        meta = read_json(wd / "meta.json", {}) or {}
+        meta["transcript_source"] = "napisy"
+        atomic_write_json(str(wd / "meta.json"), meta)
+        orch = lib.orchestrator(vid)
+        orch.save_state("asr", "done", 0)   # transkrypcja z napisow zastepuje etap ASR
+        return {"segments": len(segs), "duration": segs[-1]["end"]}
+
+    @app.get("/api/videos/{vid}/slides")
+    def slides_get(vid: str):
+        return {"slides": slides_mod.summary(wd_of(vid))}
+
+    @app.put("/api/videos/{vid}/slides")
+    async def slides_put(vid: str, request: Request, name: str = "slajdy.pdf"):
+        require_header(request)
+        wd = wd_of(vid)
+        raw = await request.body()
+        if not raw.startswith(b"%PDF"):
+            raise HTTPException(400, "To nie jest plik PDF.")
+        try:
+            info = await asyncio.to_thread(slides_mod.extract, raw)
+        except slides_mod.SlidesError as e:
+            raise HTTPException(400, str(e))
+        slides_mod.save(wd, name[:120], info)
+        return {"slides": slides_mod.summary(wd)}
+
+    @app.delete("/api/videos/{vid}/slides")
+    def slides_delete(vid: str, request: Request):
+        require_header(request)
+        slides_mod.delete(wd_of(vid))
+        return {"slides": None}
 
     # --- diagnostyka i pobieranie modeli ---
     pulls = health_mod.PullManager(getattr(ollama, "host", "http://localhost:11434"))

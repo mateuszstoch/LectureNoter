@@ -90,10 +90,19 @@ Spodziewaj się czasu wielokrotnie dłuższego niż na GPU: transkrypcja zbliżo
 **Szczegóły wykładu**
 - *Przetwarzanie:* regeneracja pojedynczego etapu (z podglądem skutków), uruchomienie od nowa, wznowienie po awarii, logi na żywo.
 - *Notatki:* Markdown z wzorami (KaTeX, offline), spis treści (można go schować), regulowana szerokość tekstu (wąsko / szeroko / pełna; ustawienia zapamiętuje przeglądarka, a widok wykładu wykorzystuje szerokie ekrany), wyszukiwanie, klikalne znaczniki czasu, edycja z historią wersji (wersja edytowana nie jest nadpisywana przy regeneracji). Eksport do Markdown, PDF (drukowanie przeglądarki) i Worda (wymaga `pandoc`).
+  - **Klatki z tablicy przy sekcjach:** pod nagłówkiem sekcji (ze znacznikiem czasu) pojawiają się miniatury tablicy z tego fragmentu; kliknięcie pokazuje klatkę z mową z tamtej chwili. Przełącznik „Ukryj/Pokaż klatki”.
+  - **Zaznaczenie tekstu:** po zaznaczeniu fragmentu notatek pojawia się pasek „Wyjaśnij prościej”, „Rozwiń” (model korzysta z kontekstu wykładu) i „Zapytaj w czacie”.
+  - **Sprawdź wierność:** heurystycznie zaznacza zdania słabo poparte transkryptem i odczytem tablicy (przerywana linia) oraz miejsca oznaczone `[?]`. To podpowiedź do weryfikacji, nie dowód błędu.
 - *Materiały:* klatki z tablicy i przeszukiwalny transkrypt.
 - *Czat:* pytania do notatek, transkryptu i odczytu tablicy; odpowiedzi strumieniowane, rozmowy zapisywane i eksportowalne (Markdown, PDF), model do wyboru spośród zainstalowanych w Ollamie.
 - *Podpowiedzi z wykładu:* przy generowaniu notatek model zapisuje słowa kluczowe i pytania pomocnicze (`suggestions.json`). Czat pokazuje je jako klikalne pojęcia i pytania (wstawiają się do pola, które możesz poprawić), a formularz quizu podpowiada pojęcia przy wyborze obszaru. Dla starszych wykładów podpowiedzi powstają z nagłówków notatek, a link „Wygeneruj lepsze modelem” tworzy je na żądanie (także po dużej edycji notatek).
+- *Słownik:* pojęcia wykładu z definicjami (z szkieletu notatek lub generowane na żądanie), z przejściem do notatek, czatu, quizu i fiszek.
+- *Fiszki:* z pojęć słownika, z błędnych odpowiedzi w quizach lub własne; powtórki rozłożone w czasie (uproszczone SM-2: „Nie pamiętam / Trudne / Dobrze / Łatwo”). Eksport do **Anki** (plik tekstowy: Plik → Importuj, rozdzielany tabulatorami, HTML włączony).
 - *Quiz:* patrz niżej.
+
+**Strony ogólne** (menu u góry): **Czat** pyta o notatki wszystkich wykładów lub wybranego folderu (przy każdym fragmencie widać, z którego wykładu pochodzi); **Postępy** pokazuje dla każdego wykładu wyniki quizów, słabe zagadnienia i fiszki do powtórki, z filtrem po folderze; **Diagnostyka** sprawdza Pythona, ffmpeg, GPU/CUDA, Ollamę, wymagane modele i miejsce na dysku, a brakujące modele pobiera jednym kliknięciem (z paskiem postępu).
+
+**Dodatkowe wejścia:** pliki **audio** (mp3, wav, m4a, flac, ogg, opus, aac) działają jak nagrania bez obrazu: etapy tablicy są pomijane, a notatki powstają z mowy. W „Napisy i slajdy” (szczegóły wykładu) można wczytać **napisy `.srt`/`.vtt`**, które zastępują transkrypcję (ASR jest wtedy zbędny), oraz **slajdy PDF** jako materiał pomocniczy: ich tekst uzupełnia czat i szkielet notatek (wymaga biblioteki `pypdf`; skany bez warstwy tekstowej nie są obsługiwane, OCR nie jest zaimplementowany).
 
 Czat, quizy i przetwarzanie nie używają GPU jednocześnie: w czasie zadania są niedostępne, a bezczynny model jest zwalniany przed jego startem.
 

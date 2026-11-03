@@ -469,6 +469,7 @@ function updateDetail() {
         job ? h("button", { class: "danger", onclick: () => cancelJob(job.id) }, job.status === "running" ? "Zatrzymaj" : "Usuń z kolejki") : null,
         !job && resumable ? h("button", { class: "primary", onclick: () => runVideo(v.id, {}) }, v.overall === "idle" ? "Uruchom" : "Wznów") : null,
         h("button", { disabled: !!job, onclick: () => openRerunAllDialog(v) }, "Uruchom całość od nowa"),
+        h("button", { title: "Napisy (.srt/.vtt) zamiast transkrypcji i slajdy PDF jako materiał pomocniczy", onclick: () => openExtrasDialog(v) }, "Napisy i slajdy"),
         h("button", { class: "danger", disabled: !!job || v.overall === "running", title: job ? "Najpierw anuluj zadanie" : "", onclick: () => openDeleteDialog(v) }, "Usuń wykład"))),
     !v.video_exists ? h("div", { class: "banner warn", style: "margin:10px 0 0" },
       h("div", {}, v.video_path ? `Plik wideo nie istnieje: ${v.video_path}. ` : "Ten wykład nie ma przypisanego pliku wideo (np. został zaimportowany bez niego). ",
@@ -486,6 +487,8 @@ function updateDetail() {
       h("div", {}, h("div", { class: "row" }, h("h3", {}, STAGE_NAME[s]), chip(st.status),
         st.seconds != null && st.status === "done" ? h("span", { class: "muted small" }, fmtTook(st.seconds)) : null),
       showBar || (st.progress && st.status === "running") ? h("div", { class: "small muted", style: "margin-top:4px" }, progressText(s, st.progress), progressBar(st.progress)) : null,
+      (s === "frames" || s === "vlm") && v.has_video === false && st.status === "skipped" ? h("div", { class: "small muted" }, "Nagranie bez obrazu: etap pominięty, notatki powstają z mowy.") : null,
+      s === "asr" && v.transcript_source === "napisy" && st.status === "done" ? h("div", { class: "small muted" }, "Transkrypt pochodzi z zaimportowanych napisów.") : null,
       s === "asr" && v.has_audio === false && st.status === "skipped" ? h("div", { class: "small muted" }, "Brak ścieżki audio: pominięto, notatki powstaną tylko z tablicy.") : null),
       h("button", { class: "small", disabled: !!job || st.status === "running", onclick: () => openRegenDialog(v, s) }, "Regeneruj"));
   })));

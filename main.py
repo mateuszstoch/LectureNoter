@@ -120,7 +120,7 @@ class PipelineOrchestrator:
             try:
                 import frames_module
                 p = frames_module.probe(self.video)
-                new.update(duration=p["duration"], has_audio=p["has_audio"],
+                new.update(duration=p["duration"], has_audio=p["has_audio"], has_video=p.get("has_video", True),
                            width=p["width"], height=p["height"])
             except Exception as e:
                 logger.warning(f"ffprobe nie powiodl sie: {e}")
@@ -284,6 +284,19 @@ class PipelineOrchestrator:
                 p.kill()
                 p.wait()
 
+    def audio_only(self):
+        """Nagranie bez obrazu (np. mp3): etapy tablicy (klatki, odczyt VLM) sa pomijane, notatki powstaja z mowy."""
+        if self.video_known and self.video.exists():
+            meta = read_json(self.workdir / "meta.json", {}) or {}
+            if meta.get("has_video") is None:
+                import frames_module
+                try:
+                    return not frames_module.probe(self.video).get("has_video", True)
+                except Exception:
+                    return False
+            return meta["has_video"] is False
+        return False
+
     def detect_audio(self):
         if self.has_audio is None:
             import frames_module
@@ -339,6 +352,10 @@ class PipelineOrchestrator:
                     continue
                 self._prepare_stage(stage, force)
                 write_run_state(self.workdir, current_stage=stage)
+                if stage in ("frames", "vlm") and self.audio_only():
+                    logger.warning(f"[{stage}] nagranie bez obrazu: pomijam, notatki powstana z mowy")
+                    self.save_state(stage, "skipped", 0)
+                    continue
                 if stage == "asr" and not self.detect_audio():
                     logger.warning("[asr] brak sciezki audio: pomijam, notatki powstana tylko z tablicy")
                     self.save_state(stage, "skipped", 0)
