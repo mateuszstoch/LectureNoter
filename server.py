@@ -131,6 +131,12 @@ class QuizCreate(BaseModel):
     adaptive: bool = False
 
 
+class RefreshRequest(BaseModel):
+    folder: str | None = None          # None = wszystkie wykłady; inaczej folder wraz z podfolderami
+    include_incomplete: bool = False   # także etapy oczekujące, przerwane lub zakończone błędem (nie tylko nieaktualne)
+    commit: bool = False               # False = tylko podgląd
+
+
 class PullRequest(BaseModel):
     model: str
 
@@ -324,6 +330,46 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
     @app.post("/api/videos/{vid}/run")
     def run(vid: str, req: RunRequest):
         return guard(lambda: jm.enqueue(vid, req.from_stage, req.only_stage, req.force))
+
+    @app.post("/api/refresh")
+    def refresh_stale(req: RefreshRequest, request: Request):
+        """Aktualizacja nieaktualnych etapow wielu wykladow naraz (caly folder lub biblioteka): podglad albo dodanie do kolejki."""
+        if req.folder is not None and not folders.exists(req.folder):
+            raise HTTPException(404, "nie ma takiego folderu")
+        if req.commit:
+            require_header(request)
+        ids = folders.descendants(req.folder) if req.folder else None
+        will, skipped, fresh = [], [], 0
+        for v in lib.list_videos():
+            if ids is not None and v.get("folder") not in ids:
+                continue
+            title = v.get("title") or v["id"]
+            stages = v["stages"]
+            wanted = [s_ for s_, st in stages.items() if st["status"] == "stale"]
+            if req.include_incomplete:
+                wanted += [s_ for s_, st in stages.items() if st["status"] in ("pending", "error", "cancelled", "interrupted") and s_ not in wanted]
+            if not wanted:
+                fresh += 1
+                continue
+            if v["overall"] == "running" or jm.has_active(v["id"]):
+                skipped.append({"id": v["id"], "title": title, "reason": "jest już w kolejce lub trwa jego przetwarzanie"})
+                continue
+            meta = read_json(lib.workdir(v["id"]) / "meta.json", {}) or {}
+            problem = jm.preflight({"video_id": v["id"], "from_stage": None, "only_stage": None, "force": False}, meta)
+            if problem:
+                skipped.append({"id": v["id"], "title": title, "reason": "brak pliku wideo (wskaż go w szczegółach wykładu)" if "wideo" in problem else problem.split(".")[0]})
+                continue
+            will.append({"id": v["id"], "title": title, "stages": wanted, "has_edited_notes": (lib.workdir(v["id"]) / "lecture_notes.edited.md").exists()})
+        queued = 0
+        if req.commit:
+            for item in list(will):
+                try:
+                    jm.enqueue(item["id"])
+                    queued += 1
+                except JobError as e:
+                    will.remove(item)
+                    skipped.append({"id": item["id"], "title": item["title"], "reason": str(e)})
+        return {"will_run": will, "skipped": skipped, "up_to_date": fresh, "queued": queued, "committed": bool(req.commit)}
 
     @app.get("/api/queue")
     def queue():

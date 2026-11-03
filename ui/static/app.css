@@ -406,3 +406,4 @@ pre.vlm { white-space: pre-wrap; background: var(--sunk); padding: 8px 12px; fon
 .gloss-item { margin: 0; }
 .gloss-term { font: 600 18px var(--serif); }
 .gloss-def { margin-top: 4px; color: var(--ink-2); line-height: 1.5; }
+.refresh-list { max-height: 260px; overflow: auto; display: grid; gap: 6px; padding: 8px 10px; border: 1px solid var(--rule); background: var(--sunk); }

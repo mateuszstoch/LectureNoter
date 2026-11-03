@@ -282,7 +282,9 @@ function mountLibrary(fid) {
     h("div", { id: "libroot" },
       h("div", { class: "page-head" },
         h("div", {}, h("h1", { id: "libtitle" }, "Wykłady"), h("p", { id: "libsub" }, "")),
-        h("div", { class: "row" }, h("button", { onclick: openNewFolder }, "Nowy folder"), h("button", { onclick: pickImportFile, title: "Wczytaj wykład z pliku .lec (można też przeciągnąć plik na tę stronę)" }, "Importuj"),
+        h("div", { class: "row" }, h("button", { onclick: () => openRefreshDialog(currentFolderId() || null),
+          title: "Dodaje do kolejki wszystkie wykłady z nieaktualnymi etapami (w tym folderze i podfolderach)" }, "Zaktualizuj nieaktualne"),
+          h("button", { onclick: openNewFolder }, "Nowy folder"), h("button", { onclick: pickImportFile, title: "Wczytaj wykład z pliku .lec (można też przeciągnąć plik na tę stronę)" }, "Importuj"),
           h("button", { class: "primary", onclick: openAddDialog }, "Dodaj nagranie"))),
       h("div", { class: "searchbar" }, search, sort),
       only,
@@ -331,3 +333,43 @@ document.addEventListener("keydown", (e) => {
   const typing = el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
   if (e.key === "/" && !typing && $("#libsearch")) { e.preventDefault(); $("#libsearch").focus(); }
 });
+
+
+// ---------- aktualizacja nieaktualnych etapów w całym folderze ----------
+async function openRefreshDialog(fid) {
+  const scope = fid ? `folderu „${(folderById(fid) || {}).name || ""}” (z podfolderami)` : "całej biblioteki";
+  const body = h("div", { class: "muted" }, "Sprawdzam wykłady…");
+  let incomplete = false, plan = null;
+  const confirm = h("button", { class: "primary", disabled: true }, "Dodaj do kolejki");
+  openDialog(h("h2", {}, "Zaktualizuj nieaktualne etapy"), body, h("div", { class: "actions" }, h("button", { onclick: closeDialog }, "Anuluj"), confirm));
+
+  async function load() {
+    confirm.disabled = true;
+    try { plan = await api("/api/refresh", { method: "POST", body: { folder: fid, include_incomplete: incomplete, commit: false } }); }
+    catch (e) { body.textContent = e.message; return; }
+    const names = (list) => list.map((s) => STAGE_NAME[s] || s).join(", ");
+    body.replaceChildren(...kids(
+      h("p", { class: "small", style: "margin-top:0" }, `Zakres: ${scope}. Dla każdego wykładu uruchomione zostaną etapy, których wynik jest nieaktualny (i zależne od nich), po jednym wykładzie naraz.`),
+      h("label", { class: "row small", style: "gap:8px;margin-bottom:10px" },
+        h("input", { type: "checkbox", checked: incomplete, onchange: (e) => { incomplete = e.target.checked; load(); } }),
+        "Uwzględnij też niedokończone (oczekujące, przerwane lub zakończone błędem)"),
+      plan.will_run.length ? h("div", {}, h("div", { style: "font-weight:600;margin-bottom:6px" }, `Do zaktualizowania: ${plan.will_run.length}`),
+        h("div", { class: "refresh-list" }, plan.will_run.map((x) => h("div", { class: "small" }, h("strong", {}, x.title), h("span", { class: "muted" }, ` · ${names(x.stages)}`),
+          x.has_edited_notes && x.stages.includes("llm") ? h("span", { class: "muted" }, " · ręcznie edytowane notatki zostaną zachowane") : null))))
+        : h("div", { class: "empty", style: "padding:14px 0" }, plan.up_to_date ? `Wszystko aktualne (${plan.up_to_date} wykładów).` : "Brak wykładów w tym zakresie."),
+      plan.skipped.length ? h("div", { style: "margin-top:12px" }, h("div", { class: "small", style: "font-weight:600" }, `Pominięte: ${plan.skipped.length}`),
+        plan.skipped.map((x) => h("div", { class: "small muted" }, `${x.title}: ${x.reason}`))) : null));
+    confirm.disabled = !plan.will_run.length;
+    confirm.textContent = plan.will_run.length ? `Dodaj do kolejki (${plan.will_run.length})` : "Dodaj do kolejki";
+  }
+  confirm.onclick = async () => {
+    confirm.disabled = true;
+    try {
+      const r = await api("/api/refresh", { method: "POST", body: { folder: fid, include_incomplete: incomplete, commit: true } });
+      closeDialog();
+      toast(r.queued ? `Dodano do kolejki: ${r.queued} ${r.queued === 1 ? "wykład" : "wykładów"}.` : "Nic nie dodano do kolejki.");
+      await refresh();
+    } catch (e) { toast(e.message); confirm.disabled = false; }
+  };
+  load();
+}
