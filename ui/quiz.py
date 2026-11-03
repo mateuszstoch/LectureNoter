@@ -20,7 +20,11 @@ from ui import notes as notes_mod
 from ui.chat import ChatBusy, ChatError
 from ui.retrieval import build_context, split_notes
 
-TYPES = {"open": "Opisowy", "single": "ABCD (jedna odpowiedź)", "multi": "ABCD (wiele odpowiedzi)", "term": "Definicja → nazwa"}
+CONCRETE = {"open": "Opisowy", "single": "ABCD (jedna odpowiedź)", "multi": "ABCD (wiele odpowiedzi)", "term": "Definicja → nazwa"}
+TYPES = {**CONCRETE, "auto": "Mieszany (automatyczny)"}
+TYPE_HINTS = ('„term” – pojęcie z jedną nazwą i definicją; „single” – rozróżnianie podobnych pojęć, prawda/fałsz, wybór właściwej '
+              'własności; „multi” – zagadnienie z kilkoma niezależnymi własnościami; „open” – przyczyny, mechanizmy, '
+              'porównania i zależności wymagające wyjaśnienia')
 MAX_COUNT = 30
 BATCH = 5            # tyle pytan prosimy model naraz (dluzsze listy gorzej trzymaja format)
 MAX_ANSWER = 4000
@@ -363,9 +367,14 @@ class QuizService:
         return [s["title"] for s in split_notes(md) if s["text"].strip()]
 
     # ---------- tworzenie ----------
-    def create(self, video_id, qtype, count, sections=None, topic="", model=None, title=None):
+    def create(self, video_id, qtype, count, sections=None, topic="", model=None, title=None, types=None, adaptive=False):
         if qtype not in TYPES:
             raise QuizError("Nieznany typ quizu.")
+        allowed = [t for t in (types if types is not None else list(CONCRETE)) if t in CONCRETE]
+        if qtype == "auto" and not allowed:
+            raise QuizError("Wybierz co najmniej jeden dozwolony typ pytań.")
+        if adaptive and not self.weak_topics(video_id):
+            raise QuizError("Brak historii słabych stron: najpierw rozwiąż jakiś quiz tego wykładu (z błędami).")
         count = int(count)
         if not 1 <= count <= int(self.qcfg.get("max_count", MAX_COUNT)):
             raise QuizError(f"Liczba pytań musi być z zakresu 1-{int(self.qcfg.get('max_count', MAX_COUNT))}.")
@@ -386,8 +395,8 @@ class QuizService:
             raise ChatBusy(f"GPU jest zajęte przez: {holder.get('owner')}. Quiz można wygenerować po zakończeniu zadania.")
         sections = [s for s in (sections or []) if isinstance(s, str)]
         topic = (topic or "").strip()[:300]
-        scope = {"sections": sections, "topic": topic}
-        label = TYPES[qtype]
+        scope = {"sections": sections, "topic": topic, "adaptive": bool(adaptive), "types": allowed if qtype == "auto" else None}
+        label = TYPES[qtype] + (" · słabe strony" if adaptive else "")
         auto = f"{label}: " + (topic or (", ".join(sections[:2]) + ("…" if len(sections) > 2 else "") if sections else "cały wykład"))
         quiz = {"id": uuid.uuid4().hex[:8], "title": (title or "").strip()[:120] or auto[:120], "type": qtype, "created": time.time(),
                 "status": "generating", "model": model, "requested": count, "scope": scope, "questions": [], "attempts": [],
@@ -404,6 +413,30 @@ class QuizService:
 
     def is_generating(self, video_id):
         return any(v == video_id for v, _ in self._active)
+
+    # ---------- slabe strony ----------
+    def weak_topics(self, video_id):
+        """Zagadnienia, z ktorych ostatnie odpowiedzi byly bledne lub czesciowe (wg najnowszego podejscia do kazdego pytania),
+        od najslabszych. Zwraca [{topic, section, type, score, stems}]."""
+        per = {}
+        for quiz in self.store(video_id).all():
+            by_id = {q["id"]: q for q in quiz.get("questions", []) if isinstance(q, dict) and q.get("id")}
+            latest = {}
+            for att in quiz.get("attempts", []):
+                if att.get("finished"):
+                    for qid, res in (att.get("answers") or {}).items():
+                        latest[qid] = (att["finished"], res.get("score", 0))
+            for qid, (_, score) in latest.items():
+                q = by_id.get(qid)
+                if not q:
+                    continue
+                topic = q.get("topic") or q.get("section") or q["question"][:80]
+                e = per.setdefault(_norm(topic), {"topic": topic, "section": q.get("section", ""), "type": q.get("type"), "scores": [], "stems": []})
+                e["scores"].append(score)
+                e["stems"].append(q["question"])
+        out = [{"topic": e["topic"], "section": e["section"], "type": e["type"], "score": sum(e["scores"]) / len(e["scores"]), "stems": e["stems"]}
+               for e in per.values() if sum(e["scores"]) / len(e["scores"]) < 1]
+        return sorted(out, key=lambda e: e["score"])
 
     # ---------- material ----------
     def _groups(self, wd, scope, budget):
@@ -514,8 +547,12 @@ class QuizService:
         plan = [{"material": m, "want": w, "got": 0, "topics": [], "used": [], "dry": False} for m, w in self._split_counts(count, groups)]
         limit = max(count + 1, int(count * float(self.qcfg.get("attempts_factor", 2))))
         ctx = {"questions": [], "stems": [], "rejected": {}, "attempts": 0, "limit": limit, "count": count, "qid": qid, "st": st,
-               "video": video_id, "type": qtype, "model": model,
+               "video": video_id, "type": qtype, "model": model, "type_counts": {},
+               "allowed": list((quiz["scope"].get("types") or list(CONCRETE))) if qtype == "auto" else [qtype],
                "opts": {"num_ctx": num_ctx, "num_predict": predict, "temperature": float(self.qcfg.get("temperature", 0.5))}}
+
+        if quiz["scope"].get("adaptive"):
+            self._seed_weak(video_id, ctx, plan, quiz["scope"])
 
         def need():
             return len(ctx["questions"]) < count and ctx["attempts"] < limit
@@ -539,6 +576,38 @@ class QuizService:
                                           progress={"done": len(questions), "total": count}))
         logger.info(f"quiz {video_id}/{qid}: {len(questions)}/{count} pytan ({qtype}), prob: {ctx['attempts']}")
 
+    def _seed_weak(self, video_id, ctx, plan, scope):
+        """Tryb adaptacyjny: do kolejek zagadnien wstawia najpierw slabe strony (do ~70% pytan danej grupy), a stare pytania
+        trafiaja na liste 'juz zadanych', zeby powstaly nowe pytania, nie powtorki."""
+        weak = self.weak_topics(video_id)
+        for g in plan:
+            titles = re.findall(r"(?m)^## (.+)$", g["material"])
+            mine = [w for w in weak if not titles or not w["section"] or any(_norm(w["section"]) in _norm(t) or _norm(t) in _norm(w["section"]) for t in titles)]
+            if scope.get("sections") or scope.get("topic"):
+                mine = [w for w in mine if titles and w["section"]]  # w ograniczonym obszarze tylko zagadnienia z jego sekcji
+            cap = max(1, math.ceil(g["want"] * 0.7))
+            for w in mine[:cap]:
+                g["topics"].append({"topic": w["topic"], "section": w["section"], "type": w["type"]})
+                ctx["stems"].extend(w["stems"])
+            weak = [w for w in weak if w not in mine[:cap]]
+        ctx["weak_seeded"] = sum(len(g["topics"]) for g in plan)
+
+    def _choose_type(self, ctx, suggested):
+        """Typ pytania w trybie mieszanym: podpowiedz modelu, ale z limitami (zaden typ >50% quizu, opisowe <=20%) i zroznicowaniem."""
+        allowed, counts, total = ctx["allowed"], ctx["type_counts"], ctx["count"]
+        if len(allowed) == 1:
+            return allowed[0]
+
+        def cap(t):
+            return max(1, math.ceil(total * (0.2 if t == "open" else 0.5)))
+
+        def room(t):
+            return counts.get(t, 0) < cap(t)
+        if suggested in allowed and room(suggested):
+            return suggested
+        free = [t for t in allowed if room(t)] or allowed
+        return min(free, key=lambda t: counts.get(t, 0))
+
     def _reject(self, ctx, reason, detail=None):
         ctx["rejected"][reason] = ctx["rejected"].get(reason, 0) + 1
         if detail is not None:
@@ -552,6 +621,10 @@ class QuizService:
                   "zależność lub zastosowanie) z poniższego materiału, z których da się ułożyć dobre pytanie. Zagadnienia mają dotyczyć "
                   "różnych części materiału. Każde opisz krótko (kilka słów) i podaj tytuł sekcji, z której pochodzi. "
                   f'Format: {{"topics": [{{"topic": "...", "section": "tytuł sekcji"}}]}}{avoid}\n\n# Materiał\n{g["material"]}')
+        if ctx["type"] == "auto":
+            prompt = prompt.replace('Format: {"topics": [{"topic": "...", "section": "tytuł sekcji"}]}',
+                                    "Dla każdego zagadnienia wybierz też NAJLEPSZY typ pytania sprawdzającego je: " + TYPE_HINTS
+                                    + f'. Dozwolone typy: {", ".join(ctx["allowed"])}. Format: {{"topics": [{{"topic": "...", "section": "tytuł sekcji", "type": "typ"}}]}}', 1)
         try:
             raw = self.client.generate(ctx["model"], prompt, system=SYSTEM, options=ctx["opts"], keep_alive="10m", format="json")
         except OllamaError:
@@ -568,7 +641,7 @@ class QuizService:
                 continue
             t = _text(_pick(it, "topic", "zagadnienie", "temat"), 200)
             if t and not too_similar(t, g["used"] + [x["topic"] for x in out]):
-                out.append({"topic": t, "section": _text(_pick(it, "section", "sekcja"), 160)})
+                out.append({"topic": t, "section": _text(_pick(it, "section", "sekcja"), 160), "type": _text(_pick(it, "type", "typ"), 20).lower()})
         return out
 
     @staticmethod
@@ -600,10 +673,11 @@ class QuizService:
         item = g["topics"].pop(0)
         ctx["attempts"] += 1
         topic = item["topic"]
+        qtype = self._choose_type(ctx, item.get("type")) if ctx["type"] == "auto" else ctx["type"]
         if topic:
             g["used"].append(topic)
         material = self._focus(g["material"], item["section"]) if topic else g["material"]
-        prompt = self._prompt(ctx["type"], material, ctx["stems"], topic)
+        prompt = self._prompt(qtype, material, ctx["stems"], topic)
         raw = self.client.generate(ctx["model"], prompt, system=SYSTEM, options=ctx["opts"], keep_alive="10m", format="json")
         found = questions_of(raw)
         if not found:
@@ -612,7 +686,7 @@ class QuizService:
             return
         for r in found[:1]:
             try:
-                q = _normalize(r, ctx["type"])
+                q = _normalize(r, qtype)
             except ValueError as e:
                 self._reject(ctx, str(e), json.dumps(r, ensure_ascii=False)[:300])
                 return
@@ -623,6 +697,7 @@ class QuizService:
             if topic:
                 q["topic"] = topic
             ctx["questions"].append(q)
+            ctx["type_counts"][qtype] = ctx["type_counts"].get(qtype, 0) + 1
             ctx["stems"].append(q["question"])
             g["got"] += 1
             done = len(ctx["questions"])

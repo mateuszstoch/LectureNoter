@@ -122,6 +122,8 @@ class QuizCreate(BaseModel):
     topic: str = ""
     model: str | None = None
     title: str | None = None
+    types: list[str] | None = None
+    adaptive: bool = False
 
 
 class QuizAnswer(BaseModel):
@@ -652,10 +654,15 @@ def create_app(cfg, videos_dir=None, work_dir=None, jobs=None, start_jobs=True, 
         wd_of(vid)
         return quizzes.scopes(vid)
 
+    @app.get("/api/videos/{vid}/quiz-weak")
+    def quiz_weak(vid: str):
+        wd_of(vid)
+        return [{"topic": w["topic"], "score": round(w["score"], 2)} for w in quizzes.weak_topics(vid)]
+
     @app.post("/api/videos/{vid}/quizzes")
     def quiz_create(vid: str, req: QuizCreate):
         wd_of(vid)
-        return quiz_guard(lambda: quizzes.create(vid, req.type, req.count, req.sections, req.topic, req.model, req.title))
+        return quiz_guard(lambda: quizzes.create(vid, req.type, req.count, req.sections, req.topic, req.model, req.title, req.types, req.adaptive))
 
     @app.get("/api/videos/{vid}/quizzes/{qid}")
     def quiz_get(vid: str, qid: str):

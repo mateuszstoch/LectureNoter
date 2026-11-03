@@ -50,8 +50,9 @@ class QuizOllama(FakeOllama):
         if "Zaplanuj quiz" in prompt:
             k = int(prompt.split("Wypisz ")[1].split()[0])
             rnd = random.Random(self.n + len(self.generated))
-            return json.dumps({"topics": [{"topic": "".join(rnd.choice("abcdefghijklmnoprstuwz") for _ in range(14)), "section": "Organizacja"}
-                                          for _ in range(k)]})
+            kinds = getattr(self, "suggest", None) or ["open"]
+            return json.dumps({"topics": [{"topic": "".join(rnd.choice("abcdefghijklmnoprstuwz") for _ in range(14)), "section": "Organizacja",
+                                           "type": kinds[i % len(kinds)]} for i in range(k)]})
         self.q_calls += 1
         if self.q_calls <= self.fail_first:
             return json.dumps({"questions": [{"question": "Złe?", "options": [{"text": "a", "correct": True}, {"text": "b", "correct": True}]}]})
@@ -63,7 +64,7 @@ class QuizOllama(FakeOllama):
                 out.append(mk_choice(i))
             elif "wielokrotnego" in prompt:
                 out.append(mk_choice(i, True))
-            elif "podaj nazwę" in prompt:
+            elif "podaj nazwę" in prompt or "„podaj nazwę”" in prompt:
                 out.append({"definition": STEMS[i % len(STEMS)], "term": f"Pojęcie{i}", "aliases": [f"Alias{i}"], "explanation": "Uzupełnienie."})
             else:
                 out.append({"question": STEMS[i % len(STEMS)], "model_answer": "Wzorcowa odpowiedź.", "key_points": ["a", "b"]})
@@ -368,3 +369,92 @@ def test_distinct_topics_used_once(qc):
     q = make(c, type="open", count=6)
     topics = [x["topic"] for x in q["questions"]]
     assert len(topics) == len(set(topics)) == 6
+
+
+def types_of(q):
+    out = {}
+    for x in q["questions"]:
+        out[x["type"]] = out.get(x["type"], 0) + 1
+    return out
+
+
+def test_auto_mode_respects_caps_even_if_model_suggests_only_open(qc):
+    c, fake, app = qc
+    fake.suggest = ["open"]            # model uparcie proponuje same opisowe
+    q = make(c, type="auto", count=8)
+    t = types_of(q)
+    assert q["status"] == "ready" and len(q["questions"]) == 8
+    assert t.get("open", 0) <= 2 and max(t.values()) <= 4 and len(t) >= 3     # limity: opisowe <=20%, zaden typ >50%, zroznicowanie
+
+
+def test_auto_mode_follows_model_suggestions_within_caps(qc):
+    c, fake, app = qc
+    fake.suggest = ["term", "single", "multi", "open"]
+    t = types_of(make(c, type="auto", count=8))
+    assert set(t) == {"term", "single", "multi", "open"}
+
+
+def test_auto_mode_only_allowed_types(qc):
+    c, fake, app = qc
+    fake.suggest = ["open", "multi"]
+    q = make(c, type="auto", count=6, types=["term", "single"])
+    assert set(types_of(q)) <= {"term", "single"} and len(q["questions"]) == 6
+    r = c.post("/api/videos/ok/quizzes", json={"type": "auto", "count": 3, "types": []})
+    assert r.status_code == 400 and "typ" in r.json()["detail"]
+
+
+def test_mixed_quiz_full_attempt(qc):
+    c, fake, app = qc
+    fake.suggest = ["term", "single", "multi", "open"]
+    q = make(c, type="auto", count=4)
+    att = c.post(f"/api/videos/ok/quizzes/{q['id']}/attempts").json()
+    url = f"/api/videos/ok/quizzes/{q['id']}/attempts/{att['id']}/answer"
+    last = None
+    for x in q["questions"]:
+        if x["type"] in ("single", "multi"):
+            ans = [i for i, o in enumerate(x["options"]) if o["correct"]]
+        elif x["type"] == "term":
+            ans = x["term"]
+        else:
+            ans = "odpowiedź"
+        last = c.post(url, json={"question_id": x["id"], "answer": ans}).json()
+    assert last["attempt"]["finished"] and last["attempt"]["percent"] == 100
+
+
+def test_adaptive_needs_history_then_targets_weak_topics(qc):
+    c, fake, app = qc
+    fake.suggest = ["single"]
+    r = c.post("/api/videos/ok/quizzes", json={"type": "single", "count": 3, "adaptive": True})
+    assert r.status_code == 400 and "słabych" in r.json()["detail"]
+    assert c.get("/api/videos/ok/quiz-weak").json() == []
+    q = make(c, type="single", count=4)
+    att = c.post(f"/api/videos/ok/quizzes/{q['id']}/attempts").json()
+    url = f"/api/videos/ok/quizzes/{q['id']}/attempts/{att['id']}/answer"
+    for i, x in enumerate(q["questions"]):     # dwa pytania bledne, dwa dobre
+        right = [j for j, o in enumerate(x["options"]) if o["correct"]]
+        wrong = [j for j, o in enumerate(x["options"]) if not o["correct"]][:1]
+        c.post(url, json={"question_id": x["id"], "answer": wrong if i < 2 else right})
+    weak = c.get("/api/videos/ok/quiz-weak").json()
+    weak_topics = {x["topic"] for x in q["questions"][:2]}
+    assert {w["topic"] for w in weak} == weak_topics and all(w["score"] == 0 for w in weak)
+    n_before = len(fake.generated)
+    q2 = make(c, type="single", count=3, adaptive=True)
+    assert q2["status"] == "ready" and len(q2["questions"]) == 3 and q2["scope"]["adaptive"] is True
+    # pytania pochodza ze slabych zagadnien (do ~70%) i nie sa powtorkami starych pytan
+    from_weak = [x for x in q2["questions"] if x.get("topic") in weak_topics]
+    assert len(from_weak) >= 2
+    old = {x["question"] for x in q["questions"]}
+    assert not any(x["question"] in old for x in q2["questions"])
+    prompts = " ".join(fake.generated[n_before:])
+    assert any(t in prompts for t in weak_topics)
+
+
+def test_weak_topic_recovers_after_correct_retake(qc):
+    c, fake, app = qc
+    q = make(c, type="term", count=2)
+    for correct in (False, True):                                # najpierw bledne, potem poprawne podejscie
+        att = c.post(f"/api/videos/ok/quizzes/{q['id']}/attempts").json()
+        for x in q["questions"]:
+            c.post(f"/api/videos/ok/quizzes/{q['id']}/attempts/{att['id']}/answer",
+                   json={"question_id": x["id"], "answer": x["term"] if correct else "zle"})
+        assert bool(c.get("/api/videos/ok/quiz-weak").json()) is (not correct)

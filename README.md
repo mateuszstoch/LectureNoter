@@ -106,10 +106,15 @@ Generowane lokalnym modelem z notatek i transkryptu.
 | ABCD, wiele odpowiedzi | trzeba zaznaczyć wszystkie poprawne |
 | Definicja → nazwa | dostajesz opis, podajesz nazwę pojęcia (tolerowane literówki i synonimy; własny synonim można uznać ręcznie) |
 | Opisowy | odpowiedź ocenia model względem wzorca; gdy jest niedostępny, oceniasz sam |
+| Mieszany (automatyczny) | model sam wybiera zagadnienia i najlepszy typ pytania do każdego z nich (definicje → „podaj nazwę”, rozróżnianie pojęć → ABCD, mechanizmy → opisowe) |
 
 Wybierasz liczbę pytań (1–30) i obszar: cały wykład, wybrane sekcje notatek lub dowolny temat. Pytania sprawdzają zrozumienie, nie szczegóły typu daty. Po każdej odpowiedzi widzisz poprawną odpowiedź i uzasadnienie, także dlaczego pozostałe opcje są błędne. Quiz jest zaliczony od 80% (`quiz.pass_ratio`). Quizy zapisują się z historią podejść (`work/<film>/quizzes.json`), można je powtarzać i usuwać. Kilka quizów czeka w kolejce na model.
 
 Generowanie ma dwa etapy: najpierw model planuje listę **różnych zagadnień** z materiału (to eliminuje powtarzające się pytania), potem układa pytanie do każdego z nich. Gdy pytanie jest niepoprawne albo się powtarza, bierze kolejne zagadnienie (lub planuje nowe) i próbuje dalej, aż liczba pytań dojdzie do wybranej. Poddaje się dopiero po 2× tylu próbach (`quiz.attempts_factor`) i wtedy pokazuje, ile udało się ułożyć i dlaczego odrzucano pytania. W pytaniach ABCD dozwolone są też 2 opcje (prawda/fałsz).
+
+**Tryb mieszany** pozwala wyłączyć niechciane typy (np. opisowe, które są wolne na CPU). Podpowiedź modelu jest korygowana regułami w kodzie: żaden typ nie przekracza 50% quizu, pytań opisowych jest najwyżej 20%, a quiz ma co najmniej kilka różnych typów, nawet gdy mały model uparcie proponuje jeden.
+
+**Słabe strony:** opcja „Skup się na moich słabych stronach” układa nowy quiz głównie (do ~70%) z zagadnień, w których ostatnie odpowiedzi były błędne lub częściowe, na podstawie historii wszystkich quizów tego wykładu. Pytania są nowe, nie powtórką starych, a zagadnienie przestaje być „słabe”, gdy poprawnie odpowiesz na nie przy kolejnym podejściu. Opcja jest dostępna po rozwiązaniu quizu z błędami.
 
 ### Jakość notatek
 

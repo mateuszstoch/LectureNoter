@@ -3,6 +3,7 @@
 // rozwiązywanie z natychmiastową informacją zwrotną, historia podejść i usuwanie. Korzysta z helperów app.js i notes.js.
 
 const QUIZ_TYPES = {
+  auto: { label: "Mieszany (automatyczny)", hint: "Model sam wybiera zagadnienia i najlepszy typ pytania do każdego z nich." },
   single: { label: "ABCD – jedna odpowiedź", hint: "Jedna poprawna odpowiedź spośród czterech." },
   multi: { label: "ABCD – wiele odpowiedzi", hint: "Poprawnych odpowiedzi może być kilka; trzeba zaznaczyć wszystkie." },
   term: { label: "Definicja → nazwa", hint: "Dostajesz opis pojęcia i podajesz, jak się nazywa." },
@@ -44,6 +45,7 @@ function mountQuizTab(container, videoId) {
     const parts = [];
     if (s.sections && s.sections.length) parts.push(`sekcje: ${s.sections.join(", ")}`);
     if (s.topic) parts.push(`temat: ${s.topic}`);
+    if (s.adaptive) parts.push("powtórka słabych stron");
     return parts.join("; ") || "cały wykład";
   }
 
@@ -92,15 +94,26 @@ function mountQuizTab(container, videoId) {
 
   // ---------- nowy quiz ----------
   async function renderNew() {
-    let scopes = [];
+    let scopes = [], weak = [];
     try { scopes = await api(`/api/videos/${videoId}/quiz-scopes`); } catch (_) { /* brak notatek: tylko temat */ }
-    let type = "single";
+    try { weak = await api(`/api/videos/${videoId}/quiz-weak`); } catch (_) { /* brak historii */ }
+    let type = "auto";
+    const allowed = new Set(["term", "single", "multi", "open"]);
+    const allowedBox = h("div", { class: "row small", style: "gap:14px;margin-top:8px;flex-wrap:wrap" });
+    const paintAllowed = () => {
+      allowedBox.hidden = type !== "auto";
+      allowedBox.replaceChildren(h("span", { class: "muted" }, "Dozwolone typy:"), ...["term", "single", "multi", "open"].map((k) =>
+        h("label", { class: "row", style: "gap:5px" }, h("input", { type: "checkbox", checked: allowed.has(k), onchange: (e) => { if (e.target.checked) allowed.add(k); else allowed.delete(k); } }),
+          QUIZ_TYPES[k].label)));
+    };
+    const adaptive = h("input", { type: "checkbox", disabled: !weak.length });
     const typeBox = h("div", { class: "quiz-types" });
     const paintTypes = () => typeBox.replaceChildren(...Object.entries(QUIZ_TYPES).map(([k, t]) =>
       h("label", { class: `opt${type === k ? " on" : ""}` },
-        h("input", { type: "radio", name: "qtype", value: k, checked: type === k, onchange: () => { type = k; paintTypes(); } }),
+        h("input", { type: "radio", name: "qtype", value: k, checked: type === k, onchange: () => { type = k; paintTypes(); paintAllowed(); } }),
         h("span", {}, h("strong", {}, t.label), h("span", { class: "muted small", style: "display:block" }, t.hint)))));
     paintTypes();
+    paintAllowed();
     const count = h("input", { type: "number", min: "1", max: "30", value: "10", style: "width:80px", "aria-label": "Liczba pytań" });
     const topic = h("input", { type: "text", placeholder: "np. maszyna Turinga albo problemy NP-zupełne", style: "width:100%", "aria-label": "Obszar" });
     const title = h("input", { type: "text", placeholder: "(opcjonalnie) własna nazwa", style: "width:100%", "aria-label": "Nazwa quizu" });
@@ -114,11 +127,12 @@ function mountQuizTab(container, videoId) {
     const boxes = scopes.map((s) => h("input", { type: "checkbox", value: s }));
     const go_ = h("button", { class: "primary", onclick: submit }, "Generuj quiz");
     async function submit() {
+      if (type === "auto" && !allowed.size) { toast("Wybierz co najmniej jeden dozwolony typ pytań."); return; }
       const n = parseInt(count.value, 10);
       if (!(n >= 1 && n <= 30)) { toast("Liczba pytań musi być z zakresu 1-30."); return; }
       go_.disabled = true;
       try {
-        await api(base, { method: "POST", body: { type, count: n, topic: topic.value.trim(), title: title.value.trim() || null,
+        await api(base, { method: "POST", body: { type, count: n, types: type === "auto" ? [...allowed] : null, adaptive: adaptive.checked, topic: topic.value.trim(), title: title.value.trim() || null,
           sections: boxes.filter((b) => b.checked).map((b) => b.value), model: model.value || null } });
         go({ name: "list" });
         loadList();
@@ -127,12 +141,15 @@ function mountQuizTab(container, videoId) {
     paint(
       h("h2", {}, "Nowy quiz"),
       h("div", { class: "card" },
-        h("div", { class: "field-label" }, "Typ pytań"), typeBox,
+        h("div", { class: "field-label" }, "Typ pytań"), typeBox, allowedBox,
         h("div", { class: "field-label" }, "Liczba pytań"), count,
         h("div", { class: "field-label" }, "Obszar wykładu ", h("span", { class: "muted small" }, "(puste = cały wykład)")),
         topic,
         scopes.length ? h("details", { style: "margin-top:8px" }, h("summary", { class: "small" }, `Wybierz sekcje notatek (${scopes.length})`),
           h("div", { class: "quiz-scopes" }, scopes.map((s, i) => h("label", { class: "row small", style: "gap:8px" }, boxes[i], s)))) : null,
+        h("label", { class: "row", style: "gap:8px;margin-top:12px" }, adaptive,
+          h("span", {}, "Skup się na moich słabych stronach ", h("span", { class: "muted small" },
+            weak.length ? `(${weak.length} zagadnień do powtórki: ${weak.slice(0, 3).map((w) => w.topic).join("; ")}${weak.length > 3 ? "…" : ""})` : "(dostępne po rozwiązaniu quizu z błędami)"))),
         h("div", { class: "field-label" }, "Nazwa"), title,
         h("div", { class: "field-label" }, "Model"), model,
         h("div", { class: "muted small", style: "margin:10px 0" }, "Pytania powstają lokalnie z notatek i transkryptu. Generowanie zajmuje model (GPU) na kilkadziesiąt sekund do kilku minut; możesz w tym czasie przeglądać inne zakładki."),
