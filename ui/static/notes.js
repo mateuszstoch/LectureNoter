@@ -156,26 +156,47 @@ function mountNotesTab(container, videoId) {
     if (!framesOn) return;
     if (!framesData) { try { framesData = await api(`/api/videos/${videoId}/frames`); } catch (_) { framesData = []; } }
     if (!framesData.length || !root.contains(body)) return;
-    const secs = [...body.querySelectorAll("h2")].map((hd) => {
-      let el = hd.nextElementSibling, t = null;
-      const own = hd.querySelector("a.ts"), om = own && own.textContent.match(/(\d+):(\d+):(\d+)/);
-      if (om) { t = tsToSec(om[1], om[2], om[3]); el = null; }   // znacznik w samym nagłówku
-      while (el && el.tagName !== "H2") {
-        const a = el.matches("a.ts") ? el : el.querySelector("a.ts");
-        const m = a && a.textContent.match(/(\d+):(\d+):(\d+)/);
-        if (m) { t = tsToSec(m[1], m[2], m[3]); break; }
-        el = el.nextElementSibling;
-      }
-      return { hd, t };
-    }).filter((x) => x.t != null);
+    // Czas każdej sekcji: pierwszy znacznik HH:MM:SS w nagłówku lub tekście sekcji; gdy go brak (modele często pomijają znaczniki),
+    // czas jest szacowany z kolejności i długości sekcji (notatki idą chronologicznie), więc klatki pojawiają się zawsze.
+    const TS3 = /(\d{1,2}):(\d{2}):(\d{2})/;
+    let heads = [...body.querySelectorAll("h2")];
+    if (!heads.length) heads = [...body.querySelectorAll("h3")];
+    heads = heads.filter((hd) => !/^(spis treści|podsumowanie)\b/i.test(hd.textContent.trim()));
+    if (!heads.length) return;
+    let pos = 0;
+    const secs = heads.map((hd) => {
+      let el = hd.nextElementSibling, text = hd.textContent, len = 0;
+      const stop = hd.tagName === "H2" ? /^H[12]$/ : /^H[123]$/;   // sekcja trwa do następnego nagłówka tego samego lub wyższego poziomu
+      while (el && !stop.test(el.tagName)) { text += "\n" + el.textContent; len += el.textContent.length; el = el.nextElementSibling; }
+      const m = text.match(TS3);
+      const sec = { hd, t: m ? tsToSec(m[1], m[2], m[3]) : null, explicit: !!m, at: pos };
+      pos += Math.max(len, 80);
+      return sec;
+    });
+    const tmin = framesData[0].timestamp, tmax = framesData[framesData.length - 1].timestamp + 1;
+    const anchors = [{ at: 0, t: tmin }, ...secs.filter((x) => x.t != null).map((x) => ({ at: x.at, t: x.t })), { at: pos, t: tmax }]
+      .sort((x, y) => x.at - y.at || x.t - y.t);
+    secs.forEach((sec) => {
+      if (sec.t != null) return;
+      let lo = anchors[0], hi = anchors[anchors.length - 1];
+      for (const an of anchors) { if (an.at <= sec.at) lo = an; }
+      for (let i = anchors.length - 1; i >= 0; i--) { if (anchors[i].at > sec.at) hi = anchors[i]; }
+      sec.t = hi.at === lo.at ? lo.t : lo.t + (hi.t - lo.t) * (sec.at - lo.at) / (hi.at - lo.at);
+    });
+    let prev = -Infinity;
+    secs.forEach((sec) => { sec.t = Math.max(sec.t, prev); prev = sec.t; });   // czas nie cofa się między sekcjami
     secs.forEach((sec, i) => {
       const next = secs[i + 1] ? secs[i + 1].t : Infinity;
-      const fr = framesData.filter((f) => f.timestamp >= sec.t - 45 && f.timestamp < next);
+      const slack = sec.explicit ? 45 : 0;
+      let fr = framesData.filter((f) => f.timestamp >= sec.t - slack && f.timestamp < next);
+      if (!fr.length && !secs[i + 1]) fr = framesData.filter((f) => f.timestamp >= sec.t - slack);
       if (!fr.length) return;
       const picks = fr.length <= 3 ? fr : [0, 1, 2].map((k) => fr[Math.round(k * (fr.length - 1) / 2)]);
-      sec.hd.after(h("figure", { class: "nframes" }, picks.map((f) => h("button", { class: "nframe", title: `Tablica ${fmtDur(f.timestamp)}: pokaż kontekst`,
-        onclick: () => openContextDialog(videoId, f.timestamp) },
-        h("img", { src: `/api/videos/${videoId}/frames/${f.file}`, loading: "lazy", alt: `Tablica ${fmtDur(f.timestamp)}` }), h("span", { class: "muted small" }, fmtDur(f.timestamp))))));
+      sec.hd.after(h("figure", { class: "nframes", title: sec.explicit ? "" : "Dopasowanie przybliżone: w tej sekcji brak znacznika czasu" },
+        picks.map((f) => h("button", { class: "nframe", title: `Tablica ${fmtDur(f.timestamp)}: pokaż kontekst${sec.explicit ? "" : " (dopasowanie przybliżone)"}`,
+          onclick: () => openContextDialog(videoId, f.timestamp) },
+          h("img", { src: `/api/videos/${videoId}/frames/${f.file}`, loading: "lazy", alt: `Tablica ${fmtDur(f.timestamp)}` }),
+          h("span", { class: "muted small" }, `${fmtDur(f.timestamp)}${sec.explicit ? "" : " ~"}`)))));
     });
   }
   function toggleFrames() {
